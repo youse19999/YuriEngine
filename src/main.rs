@@ -10,8 +10,9 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
 mod capture;
-mod triangle;
-use triangle::TrianglePipeline;
+mod fbx;
+mod mesh;
+use mesh::MeshPipeline;
 
 const PINK_CLEAR: wgpu::Color = wgpu::Color {
     r: 1.0,
@@ -48,13 +49,18 @@ struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
-    triangle: TrianglePipeline,
+    mesh: MeshPipeline,
+    mesh_bounds: ([f32; 3], [f32; 3]),
     imgui: ImGuiRenderer,
     uncaptured_error: Arc<Mutex<Option<String>>>,
 }
 
 impl Renderer {
-    async fn new(window: Arc<Window>, imgui_context: &mut Context) -> Result<Self, String> {
+    async fn new(
+        window: Arc<Window>,
+        imgui_context: &mut Context,
+        model_path: &std::path::Path,
+    ) -> Result<Self, String> {
         let size = window.inner_size();
         let instance = wgpu::Instance::default();
         let surface = instance
@@ -123,7 +129,15 @@ impl Renderer {
             ..config
         };
         surface.configure(&device, &config);
-        let triangle = TrianglePipeline::new(&device, config.format);
+        let model = fbx::load(model_path).map_err(|error| error.to_string())?;
+        eprintln!(
+            "Loaded {} meshes / {} triangles from {}",
+            model.source_meshes,
+            model.triangles,
+            model_path.display()
+        );
+        let mesh_bounds = (model.bounds_min, model.bounds_max);
+        let mesh = MeshPipeline::new(&device, config.format, &model);
         let imgui = ImGuiRenderer::new(
             imgui_context,
             &device,
@@ -139,7 +153,8 @@ impl Renderer {
             device,
             queue,
             config,
-            triangle,
+            mesh,
+            mesh_bounds,
             imgui,
             uncaptured_error,
         })
@@ -184,11 +199,11 @@ impl Renderer {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("triangle frame"),
+                label: Some("FBX frame"),
             });
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("triangle render pass"),
+                label: Some("FBX mesh pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     depth_slice: None,
@@ -200,7 +215,13 @@ impl Renderer {
                 })],
                 ..Default::default()
             });
-            self.triangle.draw(&mut pass);
+            self.mesh.draw(
+                &self.queue,
+                &mut pass,
+                self.mesh_bounds,
+                self.config.width,
+                self.config.height,
+            );
         }
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -233,10 +254,11 @@ struct App {
     imgui_platform: WinitPlatform,
     smoke_frames: Option<u32>,
     presented_frames: u32,
+    model_path: std::path::PathBuf,
 }
 
 impl App {
-    fn new(smoke_frames: Option<u32>) -> Self {
+    fn new(smoke_frames: Option<u32>, model_path: std::path::PathBuf) -> Self {
         let mut imgui = Context::create();
         imgui.set_ini_filename(None);
         let imgui_platform = WinitPlatform::new(&mut imgui);
@@ -247,6 +269,7 @@ impl App {
             imgui,
             imgui_platform,
             presented_frames: 0,
+            model_path,
         }
     }
 }
@@ -264,7 +287,11 @@ impl ApplicationHandler for App {
                 let window = Arc::new(window);
                 self.imgui_platform
                     .attach_window(self.imgui.io_mut(), &window, HiDpiMode::Default);
-                match pollster::block_on(Renderer::new(window.clone(), &mut self.imgui)) {
+                match pollster::block_on(Renderer::new(
+                    window.clone(),
+                    &mut self.imgui,
+                    &self.model_path,
+                )) {
                     Ok(renderer) => {
                         self.renderer = Some(renderer);
                         self.window = Some(window);
@@ -356,19 +383,29 @@ impl ApplicationHandler for App {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    if let Some(path) = std::env::args()
-        .skip(1)
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    let model_path = args
+        .iter()
+        .find_map(|arg| arg.strip_prefix("--model=").map(std::path::PathBuf::from))
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(r"G:\Tsugu\sample\MUMUS_Avatar\fbx\Mumus_fbx.fbx")
+        });
+    if let Some(path) = args
+        .iter()
         .find_map(|arg| arg.strip_prefix("--capture-frame=").map(str::to_owned))
     {
-        return pollster::block_on(capture::render_to_png(std::path::Path::new(&path)));
+        return pollster::block_on(capture::render_to_png(
+            std::path::Path::new(&path),
+            &model_path,
+        ));
     }
 
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
-    let smoke_frames = std::env::args()
-        .skip(1)
+    let smoke_frames = args
+        .iter()
         .find_map(|arg| arg.strip_prefix("--smoke-frames=")?.parse::<u32>().ok());
-    event_loop.run_app(&mut App::new(smoke_frames))?;
+    event_loop.run_app(&mut App::new(smoke_frames, model_path))?;
     Ok(())
 }
 

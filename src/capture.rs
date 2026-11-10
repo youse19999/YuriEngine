@@ -3,7 +3,7 @@ use std::fs::File;
 use std::path::Path;
 use std::sync::mpsc;
 
-use crate::{build_sample_ui, triangle::TrianglePipeline};
+use crate::{build_sample_ui, fbx, mesh::MeshPipeline};
 use imgui::Context;
 use imgui_wgpu::{Renderer as ImGuiRenderer, RendererConfig};
 
@@ -12,7 +12,7 @@ const HEIGHT: u32 = 600;
 const BYTES_PER_PIXEL: u32 = 4;
 const COPY_BYTES_PER_ROW_ALIGNMENT: u32 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
 
-pub async fn render_to_png(path: &Path) -> Result<(), Box<dyn Error>> {
+pub async fn render_to_png(path: &Path, model_path: &Path) -> Result<(), Box<dyn Error>> {
     let instance = wgpu::Instance::default();
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
@@ -44,7 +44,13 @@ pub async fn render_to_png(path: &Path) -> Result<(), Box<dyn Error>> {
         view_formats: &[],
     });
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-    let triangle = TrianglePipeline::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+    let model = fbx::load(model_path)?;
+    eprintln!(
+        "Capture loaded {} meshes / {} triangles",
+        model.source_meshes, model.triangles
+    );
+    let bounds = (model.bounds_min, model.bounds_max);
+    let mesh = MeshPipeline::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb, &model);
 
     let mut context = Context::create();
     context.set_ini_filename(None);
@@ -78,7 +84,7 @@ pub async fn render_to_png(path: &Path) -> Result<(), Box<dyn Error>> {
     });
     {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("YuriEngine offscreen triangle pass"),
+            label: Some("YuriEngine offscreen FBX pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: &view,
                 depth_slice: None,
@@ -95,7 +101,7 @@ pub async fn render_to_png(path: &Path) -> Result<(), Box<dyn Error>> {
             })],
             ..Default::default()
         });
-        triangle.draw(&mut pass);
+        mesh.draw(&queue, &mut pass, bounds, WIDTH, HEIGHT);
     }
     {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
