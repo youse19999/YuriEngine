@@ -44,6 +44,8 @@ pub async fn render_to_png(path: &Path, model_path: &Path) -> Result<(), Box<dyn
         view_formats: &[],
     });
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let (_depth_texture, depth_view) =
+        crate::mesh::create_depth_texture(&device, WIDTH, HEIGHT, "YuriEngine capture depth");
     let model = fbx::load(model_path)?;
     eprintln!(
         "Capture loaded {} meshes / {} triangles",
@@ -85,6 +87,14 @@ pub async fn render_to_png(path: &Path, model_path: &Path) -> Result<(), Box<dyn
     {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("YuriEngine offscreen FBX pass"),
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: &view,
                 depth_slice: None,

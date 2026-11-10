@@ -3,6 +3,32 @@ use wgpu::util::DeviceExt;
 
 use crate::fbx::{MeshData, Vertex};
 
+pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+
+pub fn create_depth_texture(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+    label: &'static str,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width: width.max(1),
+            height: height.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: DEPTH_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Uniforms {
@@ -59,7 +85,13 @@ impl MeshPipeline {
                 cull_mode: None,
                 ..Default::default()
             },
-            depth_stencil: None,
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
             multisample: Default::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -145,11 +177,11 @@ fn camera_matrix(bounds: ([f32; 3], [f32; 3]), aspect: f32) -> [[f32; 4]; 4] {
     [
         [1.0 / (scale * aspect.max(0.01)), 0.0, 0.0, 0.0],
         [0.0, 1.0 / scale, 0.0, 0.0],
-        [0.0, 0.0, 0.1 / scale, 0.0],
+        [0.0, 0.0, -0.1 / scale, 0.0],
         [
             -center[0] / (scale * aspect.max(0.01)),
             -center[1] / scale,
-            -center[2] * 0.1 / scale,
+            0.5 + center[2] * 0.1 / scale,
             1.0,
         ],
     ]

@@ -49,6 +49,8 @@ struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
+    _depth_texture: wgpu::Texture,
+    depth_view: wgpu::TextureView,
     mesh: MeshPipeline,
     mesh_bounds: ([f32; 3], [f32; 3]),
     imgui: ImGuiRenderer,
@@ -129,6 +131,12 @@ impl Renderer {
             ..config
         };
         surface.configure(&device, &config);
+        let (depth_texture, depth_view) = mesh::create_depth_texture(
+            &device,
+            config.width,
+            config.height,
+            "YuriEngine window depth",
+        );
         let model = fbx::load(model_path).map_err(|error| error.to_string())?;
         eprintln!(
             "Loaded {} meshes / {} triangles from {}",
@@ -153,6 +161,8 @@ impl Renderer {
             device,
             queue,
             config,
+            _depth_texture: depth_texture,
+            depth_view,
             mesh,
             mesh_bounds,
             imgui,
@@ -167,6 +177,10 @@ impl Renderer {
         self.config.width = width;
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
+        let (depth_texture, depth_view) =
+            mesh::create_depth_texture(&self.device, width, height, "YuriEngine window depth");
+        self._depth_texture = depth_texture;
+        self.depth_view = depth_view;
     }
 
     fn render(&mut self, draw_data: &imgui::DrawData) -> Result<bool, String> {
@@ -204,6 +218,14 @@ impl Renderer {
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("FBX mesh pass"),
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     depth_slice: None,
