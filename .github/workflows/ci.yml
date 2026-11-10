@@ -1,0 +1,46 @@
+name: SwapChain CI
+
+on:
+  push:
+    branches: ["Inspection/001", "Render/SwapChain"]
+  pull_request:
+    branches: ["Inspection/001", "Render/SwapChain"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux window dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libxkbcommon-x11-0 libwayland-dev libxkbcommon-dev xvfb
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Lint
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --locked --all-targets
+      - name: Build
+        run: cargo build --locked
+      - name: Present frames (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a cargo run --locked -- --smoke-frames=5
+      - name: Present frames (Windows and macOS)
+        if: runner.os != 'Linux'
+        run: cargo run --locked -- --smoke-frames=5
