@@ -32,7 +32,7 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
       - name: Build
-        run: cargo build --target x86_64-pc-windows-msvc ${{ matrix.cargo_args }}
+        run: cargo build --locked --target x86_64-pc-windows-msvc ${{ matrix.cargo_args }}
       - name: Verify executable
         shell: pwsh
         run: |
