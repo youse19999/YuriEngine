@@ -11,7 +11,12 @@ use winit::window::{Window, WindowId};
 
 mod capture;
 mod fbx;
+mod fbx_animation;
+mod fbx_hierarchy;
+mod fbx_materials;
+mod fbx_skin;
 mod mesh;
+mod texture;
 use mesh::MeshPipeline;
 
 const PINK_CLEAR: wgpu::Color = wgpu::Color {
@@ -53,6 +58,8 @@ struct Renderer {
     depth_view: wgpu::TextureView,
     mesh: MeshPipeline,
     mesh_bounds: ([f32; 3], [f32; 3]),
+    animation: fbx_animation::AnimationAsset,
+    animation_started: std::time::Instant,
     imgui: ImGuiRenderer,
     uncaptured_error: Arc<Mutex<Option<String>>>,
 }
@@ -62,6 +69,7 @@ impl Renderer {
         window: Arc<Window>,
         imgui_context: &mut Context,
         model_path: &std::path::Path,
+        animation_path: Option<&std::path::Path>,
     ) -> Result<Self, String> {
         let size = window.inner_size();
         let instance = wgpu::Instance::default();
@@ -138,14 +146,27 @@ impl Renderer {
             "YuriEngine window depth",
         );
         let model = fbx::load(model_path).map_err(|error| error.to_string())?;
+        let (animation, matched_bones) = if let Some(path) = animation_path {
+            let source = fbx_animation::load(path, 30.0).map_err(|error| error.to_string())?;
+            let result = fbx_animation::retarget(&source, &model.animation);
+            eprintln!("Retargeted animation {} onto model rig: {} mapped bones / {} target bones / {} clips", path.display(), result.1, model.animation.bones.len(), result.0.clips.len());
+            result
+        } else {
+            (model.animation.clone(), 0)
+        };
+        let _ = matched_bones;
         eprintln!(
-            "Loaded {} meshes / {} triangles from {}",
+            "Loaded {} meshes / {} triangles / {} material bindings / {} scene nodes / {} bones / {} animation clips from {}",
             model.source_meshes,
             model.triangles,
+            model.materials.len(),
+            model.hierarchy.nodes.len(),
+            model.animation.bones.len(),
+            model.animation.clips.len(),
             model_path.display()
         );
         let mesh_bounds = (model.bounds_min, model.bounds_max);
-        let mesh = MeshPipeline::new(&device, config.format, &model);
+        let mesh = MeshPipeline::new(&device, &queue, config.format, &model);
         let imgui = ImGuiRenderer::new(
             imgui_context,
             &device,
@@ -165,6 +186,8 @@ impl Renderer {
             depth_view,
             mesh,
             mesh_bounds,
+            animation,
+            animation_started: std::time::Instant::now(),
             imgui,
             uncaptured_error,
         })
@@ -218,14 +241,6 @@ impl Renderer {
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("FBX mesh pass"),
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     depth_slice: None,
@@ -235,14 +250,34 @@ impl Renderer {
                         store: wgpu::StoreOp::Store,
                     },
                 })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
                 ..Default::default()
             });
+            let clip = self.animation.clips.first();
+            let frame = clip.and_then(|clip| {
+                if clip.frames.is_empty() {
+                    return None;
+                }
+                let duration = (clip.end_seconds - clip.start_seconds).max(1.0 / 30.0);
+                let t = self.animation_started.elapsed().as_secs_f32() % duration;
+                let index = ((t * 30.0).floor() as usize).min(clip.frames.len() - 1);
+                clip.frames.get(index)
+            });
+            let palette = fbx_animation::skin_palette(&self.animation, frame);
             self.mesh.draw(
                 &self.queue,
                 &mut pass,
                 self.mesh_bounds,
                 self.config.width,
                 self.config.height,
+                Some(&palette),
             );
         }
         {
@@ -277,10 +312,15 @@ struct App {
     smoke_frames: Option<u32>,
     presented_frames: u32,
     model_path: std::path::PathBuf,
+    animation_path: Option<std::path::PathBuf>,
 }
 
 impl App {
-    fn new(smoke_frames: Option<u32>, model_path: std::path::PathBuf) -> Self {
+    fn new(
+        smoke_frames: Option<u32>,
+        model_path: std::path::PathBuf,
+        animation_path: Option<std::path::PathBuf>,
+    ) -> Self {
         let mut imgui = Context::create();
         imgui.set_ini_filename(None);
         let imgui_platform = WinitPlatform::new(&mut imgui);
@@ -292,6 +332,7 @@ impl App {
             imgui_platform,
             presented_frames: 0,
             model_path,
+            animation_path,
         }
     }
 }
@@ -313,6 +354,7 @@ impl ApplicationHandler for App {
                     window.clone(),
                     &mut self.imgui,
                     &self.model_path,
+                    self.animation_path.as_deref(),
                 )) {
                     Ok(renderer) => {
                         self.renderer = Some(renderer);
@@ -406,12 +448,131 @@ impl ApplicationHandler for App {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if let Some(path) = args.iter().find_map(|arg| {
+        arg.strip_prefix("--inspect-animation=")
+            .map(std::path::PathBuf::from)
+    }) {
+        let animation = fbx_animation::load(&path, 30.0)?;
+        println!(
+            "Animation import: {} bones / {} skinned meshes / {} clips",
+            animation.bones.len(),
+            animation.skinned_meshes.len(),
+            animation.clips.len()
+        );
+        for bone in &animation.bones {
+            println!(
+                "bone {} id={} name={} parent={:?} rest_t={:?}",
+                bone.index,
+                bone.source_node_id,
+                bone.name,
+                bone.parent,
+                bone.bind_local.translation
+            );
+        }
+        for mesh in &animation.skinned_meshes {
+            let weighted_vertices = mesh
+                .vertex_influences
+                .iter()
+                .filter(|influences| !influences.is_empty())
+                .count();
+            let max_influences = mesh
+                .vertex_influences
+                .iter()
+                .map(Vec::len)
+                .max()
+                .unwrap_or(0);
+            let max_weight_sum_error = mesh
+                .vertex_influences
+                .iter()
+                .filter(|influences| !influences.is_empty())
+                .map(|influences| {
+                    (influences
+                        .iter()
+                        .map(|influence| influence.weight)
+                        .sum::<f32>()
+                        - 1.0)
+                        .abs()
+                })
+                .fold(0.0_f32, f32::max);
+            println!(
+                "skinned mesh id={} name={} control_points={} weighted={} max_influences={} max_weight_sum_error={:.6}",
+                mesh.source_node_id,
+                mesh.name,
+                mesh.vertex_influences.len(),
+                weighted_vertices,
+                max_influences,
+                max_weight_sum_error,
+            );
+        }
+        for clip in &animation.clips {
+            let changed_bones = clip
+                .frames
+                .first()
+                .zip(clip.frames.last())
+                .map(|(first, last)| {
+                    first
+                        .bone_transforms
+                        .iter()
+                        .zip(&last.bone_transforms)
+                        .filter(|(a, b)| {
+                            (0..3).any(|axis| {
+                                (a.translation[axis] - b.translation[axis]).abs() > 1e-4
+                                    || (a.scale[axis] - b.scale[axis]).abs() > 1e-4
+                            }) || (0..4)
+                                .any(|axis| (a.rotation[axis] - b.rotation[axis]).abs() > 1e-4)
+                        })
+                        .count()
+                })
+                .unwrap_or(0);
+            println!(
+                "clip {}: {:.3}s..{:.3}s, {} samples, {} bones changed end-to-end",
+                clip.name,
+                clip.start_seconds,
+                clip.end_seconds,
+                clip.frames.len(),
+                changed_bones
+            );
+            if let Some(first) = clip.frames.first() {
+                println!("  first sample time: {:.3}s", first.time_seconds);
+            }
+        }
+        if let Some(reference_path) = args
+            .iter()
+            .find_map(|arg| arg.strip_prefix("--model=").map(std::path::PathBuf::from))
+        {
+            let reference = fbx_animation::load(&reference_path, 30.0)?;
+            let (_, semantic_matches) = fbx_animation::retarget(&animation, &reference);
+            let names: std::collections::HashSet<_> = reference
+                .bones
+                .iter()
+                .map(|bone| bone.name.as_str())
+                .collect();
+            let matching = animation
+                .bones
+                .iter()
+                .filter(|bone| names.contains(bone.name.as_str()))
+                .count();
+            println!(
+                "reference rig {}: {} bones, {} exact name matches / {} semantic retarget matches out of {} animation bones",
+                reference_path.display(),
+                reference.bones.len(),
+                matching,
+                semantic_matches,
+                animation.bones.len()
+            );
+        }
+        return Ok(());
+    }
     let model_path = args
         .iter()
         .find_map(|arg| arg.strip_prefix("--model=").map(std::path::PathBuf::from))
         .unwrap_or_else(|| {
             std::path::PathBuf::from(r"G:\Tsugu\sample\MUMUS_Avatar\fbx\Mumus_fbx.fbx")
         });
+    let animation_path = args.iter().find_map(|arg| {
+        arg.strip_prefix("--animation=")
+            .map(std::path::PathBuf::from)
+    });
     if let Some(path) = args
         .iter()
         .find_map(|arg| arg.strip_prefix("--capture-frame=").map(str::to_owned))
@@ -427,7 +588,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let smoke_frames = args
         .iter()
         .find_map(|arg| arg.strip_prefix("--smoke-frames=")?.parse::<u32>().ok());
-    event_loop.run_app(&mut App::new(smoke_frames, model_path))?;
+    event_loop.run_app(&mut App::new(smoke_frames, model_path, animation_path))?;
     Ok(())
 }
 

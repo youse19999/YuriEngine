@@ -48,11 +48,17 @@ pub async fn render_to_png(path: &Path, model_path: &Path) -> Result<(), Box<dyn
         crate::mesh::create_depth_texture(&device, WIDTH, HEIGHT, "YuriEngine capture depth");
     let model = fbx::load(model_path)?;
     eprintln!(
-        "Capture loaded {} meshes / {} triangles",
-        model.source_meshes, model.triangles
+        "Capture loaded {} meshes / {} triangles / {} material bindings / {} nodes / {} bones / {} skinned meshes / animation clips [{}]",
+        model.source_meshes,
+        model.triangles,
+        model.materials.len(),
+        model.hierarchy.nodes.len(),
+        model.animation.bones.len(),
+        model.animation.skinned_meshes.len(),
+        model.animation.clips.iter().map(|clip| format!("{}: {:.3}s, {} samples", clip.name, clip.end_seconds - clip.start_seconds, clip.frames.len())).collect::<Vec<_>>().join(", ")
     );
     let bounds = (model.bounds_min, model.bounds_max);
-    let mesh = MeshPipeline::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb, &model);
+    let mesh = MeshPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, &model);
 
     let mut context = Context::create();
     context.set_ini_filename(None);
@@ -87,14 +93,6 @@ pub async fn render_to_png(path: &Path, model_path: &Path) -> Result<(), Box<dyn
     {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("YuriEngine offscreen FBX pass"),
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &depth_view,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(1.0),
-                    store: wgpu::StoreOp::Store,
-                }),
-                stencil_ops: None,
-            }),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: &view,
                 depth_slice: None,
@@ -109,9 +107,17 @@ pub async fn render_to_png(path: &Path, model_path: &Path) -> Result<(), Box<dyn
                     store: wgpu::StoreOp::Store,
                 },
             })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
             ..Default::default()
         });
-        mesh.draw(&queue, &mut pass, bounds, WIDTH, HEIGHT);
+        mesh.draw(&queue, &mut pass, bounds, WIDTH, HEIGHT, None);
     }
     {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
