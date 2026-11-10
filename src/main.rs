@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use wgpu::CurrentSurfaceTexture;
 use winit::application::ApplicationHandler;
@@ -41,6 +41,7 @@ struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
+    uncaptured_error: Arc<Mutex<Option<String>>>,
 }
 
 impl Renderer {
@@ -66,6 +67,20 @@ impl Renderer {
             })
             .await
             .map_err(|e| format!("request device: {e}"))?;
+        let uncaptured_error = Arc::new(Mutex::new(None));
+        let error_slot = Arc::clone(&uncaptured_error);
+        device.on_uncaptured_error(Arc::new(move |error| {
+            let message = match &error {
+                wgpu::Error::OutOfMemory { .. } => {
+                    format!("fatal GPU out-of-memory error: {error}")
+                }
+                wgpu::Error::Validation { .. } => format!("fatal GPU validation error: {error}"),
+                wgpu::Error::Internal { .. } => format!("fatal internal GPU error: {error}"),
+            };
+            if let Ok(mut slot) = error_slot.lock() {
+                *slot = Some(message);
+            }
+        }));
 
         let capabilities = surface.get_capabilities(&adapter);
         let format = capabilities
@@ -106,6 +121,7 @@ impl Renderer {
             device,
             queue,
             config,
+            uncaptured_error,
         })
     }
 
@@ -119,6 +135,14 @@ impl Renderer {
     }
 
     fn render(&mut self) -> Result<bool, String> {
+        if let Some(error) = self
+            .uncaptured_error
+            .lock()
+            .map_err(|_| "GPU error state lock poisoned".to_owned())?
+            .take()
+        {
+            return Err(error);
+        }
         let frame = self.surface.get_current_texture();
         match classify_frame(&frame) {
             FrameAction::Reconfigure => {
