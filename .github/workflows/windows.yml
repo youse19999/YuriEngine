@@ -1,0 +1,47 @@
+name: Windows x64
+
+on:
+  push:
+    branches: ["Inspection/001"]
+  pull_request:
+    branches: ["Inspection/001"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.profile }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: debug
+            cargo_args: ""
+            output_dir: target/x86_64-pc-windows-msvc/debug
+          - profile: release
+            cargo_args: --release
+            output_dir: target/x86_64-pc-windows-msvc/release
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Build
+        run: cargo build --locked --target x86_64-pc-windows-msvc ${{ matrix.cargo_args }}
+      - name: Verify executable
+        shell: pwsh
+        run: |
+          $exe = "${{ matrix.output_dir }}/yuriengine-inspection.exe"
+          if (!(Test-Path $exe)) { throw "Expected executable not found: $exe" }
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: yuriengine-windows-x64-${{ matrix.profile }}
+          path: ${{ matrix.output_dir }}/yuriengine-inspection.exe
+          if-no-files-found: error
+          retention-days: 14
