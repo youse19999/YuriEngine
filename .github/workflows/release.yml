@@ -56,7 +56,8 @@ jobs:
           from pathlib import Path
 
           files = sorted(path for path in Path("dist").iterdir() if path.is_file())
-          with Path("dist/SHA256SUMS.txt").open("w", encoding="utf-8") as sums:
+          sums_path = Path("dist") / "${{ matrix.asset }}-SHA256SUMS.txt"
+          with sums_path.open("w", encoding="utf-8") as sums:
               for path in files:
                   sums.write(f"{sha256(path.read_bytes()).hexdigest()}  {path.name}\n")
           PY
