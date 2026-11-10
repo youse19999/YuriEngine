@@ -6,6 +6,9 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
+mod triangle;
+use triangle::TrianglePipeline;
+
 const PINK_CLEAR: wgpu::Color = wgpu::Color {
     r: 1.0,
     g: 0.0,
@@ -41,6 +44,7 @@ struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
+    triangle: TrianglePipeline,
     uncaptured_error: Arc<Mutex<Option<String>>>,
 }
 
@@ -115,12 +119,14 @@ impl Renderer {
             ..config
         };
         surface.configure(&device, &config);
+        let triangle = TrianglePipeline::new(&device, config.format);
 
         Ok(Self {
             surface,
             device,
             queue,
             config,
+            triangle,
             uncaptured_error,
         })
     }
@@ -164,11 +170,11 @@ impl Renderer {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("pink clear"),
+                label: Some("triangle frame"),
             });
         {
-            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("pink background"),
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("triangle render pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     depth_slice: None,
@@ -180,6 +186,7 @@ impl Renderer {
                 })],
                 ..Default::default()
             });
+            self.triangle.draw(&mut pass);
         }
         self.queue.submit([encoder.finish()]);
         self.queue.present(texture);
