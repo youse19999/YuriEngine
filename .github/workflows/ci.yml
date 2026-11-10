@@ -2,9 +2,9 @@ name: SwapChain CI
 
 on:
   push:
-    branches: ["Inspection/001", "Render/SwapChain"]
+    branches: ["Inspection/001", "Render/SwapChain", "Render/TriangleDemo"]
   pull_request:
-    branches: ["Inspection/001", "Render/SwapChain"]
+    branches: ["Inspection/001", "Render/SwapChain", "Render/TriangleDemo"]
   workflow_dispatch:
 
 permissions:
