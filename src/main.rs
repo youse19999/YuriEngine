@@ -1,5 +1,8 @@
 use std::sync::{Arc, Mutex};
 
+use imgui::{Condition, Context, Ui};
+use imgui_wgpu::{Renderer as ImGuiRenderer, RendererConfig};
+use imgui_winit_support::{HiDpiMode, WinitPlatform};
 use wgpu::CurrentSurfaceTexture;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -45,11 +48,12 @@ struct Renderer {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     triangle: TrianglePipeline,
+    imgui: ImGuiRenderer,
     uncaptured_error: Arc<Mutex<Option<String>>>,
 }
 
 impl Renderer {
-    async fn new(window: Arc<Window>) -> Result<Self, String> {
+    async fn new(window: Arc<Window>, imgui_context: &mut Context) -> Result<Self, String> {
         let size = window.inner_size();
         let instance = wgpu::Instance::default();
         let surface = instance
@@ -60,7 +64,6 @@ impl Renderer {
                 power_preference: wgpu::PowerPreference::default(),
                 force_fallback_adapter: false,
                 compatible_surface: Some(&surface),
-                apply_limit_buckets: false,
             })
             .await
             .map_err(|e| format!("request adapter: {e}"))?;
@@ -120,6 +123,15 @@ impl Renderer {
         };
         surface.configure(&device, &config);
         let triangle = TrianglePipeline::new(&device, config.format);
+        let imgui = ImGuiRenderer::new(
+            imgui_context,
+            &device,
+            &queue,
+            RendererConfig {
+                texture_format: config.format,
+                ..Default::default()
+            },
+        );
 
         Ok(Self {
             surface,
@@ -127,6 +139,7 @@ impl Renderer {
             queue,
             config,
             triangle,
+            imgui,
             uncaptured_error,
         })
     }
@@ -140,7 +153,7 @@ impl Renderer {
         self.surface.configure(&self.device, &self.config);
     }
 
-    fn render(&mut self) -> Result<bool, String> {
+    fn render(&mut self, draw_data: &imgui::DrawData) -> Result<bool, String> {
         if let Some(error) = self
             .uncaptured_error
             .lock()
@@ -188,25 +201,51 @@ impl Renderer {
             });
             self.triangle.draw(&mut pass);
         }
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("ImGui render pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            self.imgui
+                .render(draw_data, &self.queue, &self.device, &mut pass)
+                .map_err(|error| format!("render ImGui: {error}"))?;
+        }
         self.queue.submit([encoder.finish()]);
-        self.queue.present(texture);
+        texture.present();
         Ok(true)
     }
 }
 
-#[derive(Default)]
 struct App {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
+    imgui: Context,
+    imgui_platform: WinitPlatform,
     smoke_frames: Option<u32>,
     presented_frames: u32,
 }
 
 impl App {
     fn new(smoke_frames: Option<u32>) -> Self {
+        let mut imgui = Context::create();
+        imgui.set_ini_filename(None);
+        let imgui_platform = WinitPlatform::new(&mut imgui);
         Self {
+            window: None,
+            renderer: None,
             smoke_frames,
-            ..Self::default()
+            imgui,
+            imgui_platform,
+            presented_frames: 0,
         }
     }
 }
@@ -222,7 +261,9 @@ impl ApplicationHandler for App {
         match event_loop.create_window(attributes) {
             Ok(window) => {
                 let window = Arc::new(window);
-                match pollster::block_on(Renderer::new(window.clone())) {
+                self.imgui_platform
+                    .attach_window(self.imgui.io_mut(), &window, HiDpiMode::Default);
+                match pollster::block_on(Renderer::new(window.clone(), &mut self.imgui)) {
                     Ok(renderer) => {
                         self.renderer = Some(renderer);
                         self.window = Some(window);
@@ -253,6 +294,14 @@ impl ApplicationHandler for App {
         else {
             return;
         };
+        self.imgui_platform.handle_event::<()>(
+            self.imgui.io_mut(),
+            window,
+            &winit::event::Event::WindowEvent {
+                window_id,
+                event: event.clone(),
+            },
+        );
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
@@ -261,8 +310,21 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
+                if self
+                    .imgui_platform
+                    .prepare_frame(self.imgui.io_mut(), window)
+                    .is_err()
+                {
+                    eprintln!("Failed to prepare ImGui frame");
+                    event_loop.exit();
+                    return;
+                }
+                let ui = self.imgui.frame();
+                build_sample_ui(ui);
+                self.imgui_platform.prepare_render(ui, window);
+                let draw_data = self.imgui.render();
                 if let Some(renderer) = self.renderer.as_mut() {
-                    match renderer.render() {
+                    match renderer.render(draw_data) {
                         Ok(true) => {
                             self.presented_frames += 1;
                             if self
@@ -299,6 +361,17 @@ fn main() -> Result<(), winit::error::EventLoopError> {
         .skip(1)
         .find_map(|arg| arg.strip_prefix("--smoke-frames=")?.parse::<u32>().ok());
     event_loop.run_app(&mut App::new(smoke_frames))
+}
+
+fn build_sample_ui(ui: &Ui) {
+    ui.window("YuriEngine ImGui")
+        .size([300.0, 120.0], Condition::FirstUseEver)
+        .build(|| {
+            ui.text("Dear ImGui is running inside YuriEngine.");
+            ui.separator();
+            ui.text("Renderer: wgpu");
+            ui.text("Platform: winit");
+        });
 }
 
 #[cfg(test)]
