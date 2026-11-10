@@ -1,0 +1,53 @@
+name: Capture Rendered Frame
+
+on:
+  push:
+    branches: [main, "Render/**"]
+  pull_request:
+    branches: [main, "Render/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install window and image capture tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libxkbcommon-x11-0 libwayland-dev libxkbcommon-dev xvfb x11-apps xdotool imagemagick
+      - name: Build the renderer
+        run: cargo build --locked
+      - name: Render and capture a frame
+        run: |
+          xvfb-run -a -s "-screen 0 1280x1024x24" sh -c '
+            set -eu
+            target/debug/yuriengine-inspection --smoke-frames=10000 &
+            app_pid=$!
+            trap "kill \"$app_pid\" 2>/dev/null || true" EXIT
+            window_id=""
+            for attempt in $(seq 1 30); do
+              window_id=$(xdotool search --onlyvisible --name "YuriEngine SwapChain" 2>/dev/null | head -n 1 || true)
+              if [ -n "$window_id" ]; then break; fi
+              sleep 1
+            done
+            test -n "$window_id"
+            sleep 2
+            xwd -id "$window_id" -silent -out rendered-frame.xwd
+            kill "$app_pid" 2>/dev/null || true
+            wait "$app_pid" || true
+            convert rendered-frame.xwd rendered-frame.png
+            identify rendered-frame.png
+          '
+      - name: Upload rendered frame
+        uses: actions/upload-artifact@v4
+        with:
+          name: yuriengine-rendered-frame
+          path: rendered-frame.png
+          if-no-files-found: error
+          retention-days: 14
