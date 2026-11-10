@@ -9,6 +9,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
+mod capture;
 mod triangle;
 use triangle::TrianglePipeline;
 
@@ -354,16 +355,24 @@ impl ApplicationHandler for App {
     }
 }
 
-fn main() -> Result<(), winit::error::EventLoopError> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(path) = std::env::args()
+        .skip(1)
+        .find_map(|arg| arg.strip_prefix("--capture-frame=").map(str::to_owned))
+    {
+        return pollster::block_on(capture::render_to_png(std::path::Path::new(&path)));
+    }
+
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
     let smoke_frames = std::env::args()
         .skip(1)
         .find_map(|arg| arg.strip_prefix("--smoke-frames=")?.parse::<u32>().ok());
-    event_loop.run_app(&mut App::new(smoke_frames))
+    event_loop.run_app(&mut App::new(smoke_frames))?;
+    Ok(())
 }
 
-fn build_sample_ui(ui: &Ui) {
+pub(crate) fn build_sample_ui(ui: &Ui) {
     ui.window("YuriEngine ImGui")
         .size([300.0, 120.0], Condition::FirstUseEver)
         .build(|| {
