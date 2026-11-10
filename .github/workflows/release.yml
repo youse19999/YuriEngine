@@ -30,7 +30,7 @@ jobs:
             executable: yuriengine-inspection
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Linux window dependencies
         if: runner.os == 'Linux'
         run: |
@@ -48,8 +48,8 @@ jobs:
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/${{ matrix.executable }}" "dist/${{ matrix.asset }}${{ runner.os == 'Windows' && '.exe' || '' }}"
           cd dist
-          sha256sum * > SHA256SUMS.txt
-      - uses: actions/upload-artifact@v4
+          shasum -a 256 * > SHA256SUMS.txt
+      - uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.asset }}
           path: dist/*
@@ -63,7 +63,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with:
           path: dist
           merge-multiple: true
