@@ -709,7 +709,8 @@ fn build_scene_ui(ui: &Ui, scene: &mut Scene, selected_object: &mut Option<Objec
                     ui.text(format!("Name: {}", object.name));
                     {
                         let transform = object.transform_mut();
-                        ui.input_float3("Position", &mut transform.translation).build();
+                        ui.input_float3("Position", &mut transform.translation)
+                            .build();
                         ui.input_float4("Rotation (x, y, z, w)", &mut transform.rotation)
                             .build();
                         ui.input_float3("Scale", &mut transform.scale).build();
