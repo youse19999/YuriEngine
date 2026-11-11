@@ -50,3 +50,7 @@ cargo test --locked --all-targets
 ## Windows
 
 ビルドした実行ファイルの起動には Microsoft Visual C++ 2015–2022 Redistributable（x64）、または互換する Visual C++ ランタイムが必要です。
+
+## ブランチとプルリクエスト
+
+- `emscripten` ブランチから `main` ブランチへマージするプルリクエストを作成しないでください。
