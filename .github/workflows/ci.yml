@@ -2,9 +2,9 @@ name: SwapChain CI
 
 on:
   push:
-    branches: ["Inspection/001", "Render/SwapChain", "Render/TriangleDemo"]
+    branches: ["Inspection/001", "Render/SwapChain", "Render/TriangleDemo", "emscripten"]
   pull_request:
-    branches: ["Inspection/001", "Render/SwapChain", "Render/TriangleDemo"]
+    branches: ["Inspection/001", "Render/SwapChain", "Render/TriangleDemo", "emscripten"]
   workflow_dispatch:
 
 permissions:
@@ -38,9 +38,83 @@ jobs:
         run: cargo test --locked --all-targets
       - name: Build
         run: cargo build --locked
+      - name: Upload Windows executable
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: yuriengine-windows-x64
+          path: target/debug/yuriengine-inspection.exe
+          if-no-files-found: error
+          retention-days: 14
       - name: Present frames (Linux)
         if: runner.os == 'Linux'
         run: xvfb-run -a cargo run --locked -- --smoke-frames=5
       - name: Present frames (Windows and macOS)
         if: runner.os != 'Linux'
         run: cargo run --locked -- --smoke-frames=5
+
+  wasm-webgl:
+    name: WebAssembly WebGL
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.64
+          actions-cache-folder: emsdk-cache
+      - name: Install Rust WebAssembly target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Configure C compiler for ufbx
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/emcc-wasm-unknown" <<'PY'
+          #!/usr/bin/env python3
+          import os
+          import sys
+
+          args = [arg for arg in sys.argv[1:] if arg != "--target=wasm32-unknown-unknown"]
+          os.execvp("emcc", ["emcc", *args])
+          PY
+          chmod +x "$RUNNER_TEMP/emcc-wasm-unknown"
+          echo "CC_wasm32_unknown_unknown=$RUNNER_TEMP/emcc-wasm-unknown" >> "$GITHUB_ENV"
+      - name: Build WebAssembly
+        run: cargo build --locked --release --target wasm32-unknown-unknown
+      - name: Install wasm-bindgen CLI
+        run: cargo install wasm-bindgen-cli --version 0.2.130 --locked
+      - name: Generate browser bindings
+        run: wasm-bindgen --target web --out-dir dist/web target/wasm32-unknown-unknown/release/yuriengine_inspection.wasm
+      - name: Upload WebAssembly build
+        uses: actions/upload-artifact@v4
+        with:
+          name: yuriengine-webgl-wasm
+          path: dist/web
+          if-no-files-found: error
+          retention-days: 14
+
+  downloadable-builds:
+    name: Package downloadable builds
+    needs: [validate, wasm-webgl]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download Windows build
+        uses: actions/download-artifact@v4
+        with:
+          name: yuriengine-windows-x64
+          path: dist/windows-x64
+      - name: Download WebAssembly build
+        uses: actions/download-artifact@v4
+        with:
+          name: yuriengine-webgl-wasm
+          path: dist/webgl-wasm
+      - name: Upload downloadable package
+        uses: actions/upload-artifact@v4
+        with:
+          name: yuriengine-downloadable-builds
+          path: dist
+          if-no-files-found: error
+          retention-days: 14
