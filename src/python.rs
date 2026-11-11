@@ -271,7 +271,7 @@ impl PyEngine {
         max_frames: Option<u32>,
     ) -> PyResult<()> {
         let scene = Arc::clone(&scene.inner);
-        py.allow_threads(move || engine::run_scene(scene, max_frames))
+        py.detach(move || engine::run_scene(scene, max_frames))
             .map_err(PyRuntimeError::new_err)
     }
 
@@ -281,7 +281,7 @@ impl PyEngine {
             return Err(PyValueError::new_err("frames must be greater than zero"));
         }
         let scene = Arc::clone(&scene.inner);
-        py.allow_threads(move || engine::run_scene(scene, Some(frames)))
+        py.detach(move || engine::run_scene(scene, Some(frames)))
             .map_err(PyRuntimeError::new_err)
     }
 }

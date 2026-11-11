@@ -166,9 +166,6 @@ impl Renderer {
                 }
             }
         }
-        if mesh_pipelines.is_empty() {
-            return Err("scene has no MeshRenderer components".into());
-        }
         let imgui = ImGuiRenderer::new(
             imgui_context,
             &device,
@@ -673,11 +670,6 @@ pub fn cli_main() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .filter_map(|arg| arg.strip_prefix("--model=").map(std::path::PathBuf::from))
         .collect::<Vec<_>>();
-    if model_paths.is_empty() {
-        model_paths.push(std::path::PathBuf::from(
-            r"G:\Tsugu\sample\MUMUS_Avatar\fbx\Mumus_fbx.fbx",
-        ));
-    }
     let animation_path = args.iter().find_map(|arg| {
         arg.strip_prefix("--animation=")
             .map(std::path::PathBuf::from)
@@ -686,18 +678,27 @@ pub fn cli_main() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .find_map(|arg| arg.strip_prefix("--capture-frame=").map(str::to_owned))
     {
+        let default_model =
+            std::path::PathBuf::from(r"G:\Tsugu\sample\MUMUS_Avatar\fbx\Mumus_fbx.fbx");
         return pollster::block_on(capture::render_to_png(
             std::path::Path::new(&path),
-            model_paths
-                .first()
-                .expect("a default model path is inserted"),
+            model_paths.first().unwrap_or(&default_model),
         ));
     }
 
     let smoke_frames = args
         .iter()
         .find_map(|arg| arg.strip_prefix("--smoke-frames=")?.parse::<u32>().ok());
-    let scene = build_scene(&model_paths, animation_path.as_deref())?;
+    let scene = if model_paths.is_empty() && smoke_frames.is_some() {
+        Scene::new()
+    } else {
+        if model_paths.is_empty() {
+            model_paths.push(std::path::PathBuf::from(
+                r"G:\Tsugu\sample\MUMUS_Avatar\fbx\Mumus_fbx.fbx",
+            ));
+        }
+        build_scene(&model_paths, animation_path.as_deref())?
+    };
     run_scene(Arc::new(Mutex::new(scene)), smoke_frames).map_err(std::io::Error::other)?;
     Ok(())
 }
