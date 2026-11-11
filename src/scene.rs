@@ -125,6 +125,7 @@ impl Animator {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Component {
+    Transform(Transform),
     MeshRenderer(MeshRenderer),
     Animator(Animator),
 }
@@ -133,7 +134,6 @@ pub enum Component {
 pub struct GameObject {
     pub id: ObjectId,
     pub name: String,
-    pub transform: Transform,
     parent: Option<ObjectId>,
     components: Vec<Component>,
 }
@@ -147,8 +147,32 @@ impl GameObject {
         &self.components
     }
 
+    pub fn transform(&self) -> &Transform {
+        self.components
+            .iter()
+            .find_map(|component| match component {
+                Component::Transform(transform) => Some(transform),
+                _ => None,
+            })
+            .expect("every game object has a Transform component")
+    }
+
+    pub fn transform_mut(&mut self) -> &mut Transform {
+        self.components
+            .iter_mut()
+            .find_map(|component| match component {
+                Component::Transform(transform) => Some(transform),
+                _ => None,
+            })
+            .expect("every game object has a Transform component")
+    }
+
     pub fn add_component(&mut self, component: Component) -> bool {
         let already_has_component = match &component {
+            Component::Transform(_) => self
+                .components
+                .iter()
+                .any(|existing| matches!(existing, Component::Transform(_))),
             Component::MeshRenderer(_) => self
                 .components
                 .iter()
@@ -215,9 +239,8 @@ impl Scene {
         self.objects.push(GameObject {
             id,
             name: name.into(),
-            transform: Transform::default(),
             parent: None,
-            components: Vec::new(),
+            components: vec![Component::Transform(Transform::default())],
         });
         id
     }
@@ -280,7 +303,7 @@ impl Scene {
         let mut current = Some(id);
         while let Some(object_id) = current {
             let object = self.object(object_id)?;
-            chain.push(object.transform.matrix());
+            chain.push(object.transform().matrix());
             current = object.parent();
         }
         Some(

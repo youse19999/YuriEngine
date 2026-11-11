@@ -707,16 +707,18 @@ fn build_scene_ui(ui: &Ui, scene: &mut Scene, selected_object: &mut Option<Objec
             if let Some(object_id) = *selected_object {
                 if let Some(object) = scene.object_mut(object_id) {
                     ui.text(format!("Name: {}", object.name));
-                    ui.input_float3("Position", &mut object.transform.translation)
-                        .build();
-                    ui.input_float4("Rotation (x, y, z, w)", &mut object.transform.rotation)
-                        .build();
-                    ui.input_float3("Scale", &mut object.transform.scale)
-                        .build();
+                    {
+                        let transform = object.transform_mut();
+                        ui.input_float3("Position", &mut transform.translation).build();
+                        ui.input_float4("Rotation (x, y, z, w)", &mut transform.rotation)
+                            .build();
+                        ui.input_float3("Scale", &mut transform.scale).build();
+                    }
                     ui.separator();
                     ui.text("Components");
                     for component in object.components() {
                         match component {
+                            Component::Transform(_) => ui.bullet_text("Transform"),
                             Component::MeshRenderer(_) => ui.bullet_text("MeshRenderer"),
                             Component::Animator(animator) => {
                                 ui.bullet_text(format!("Animator (clip {})", animator.clip_index))
