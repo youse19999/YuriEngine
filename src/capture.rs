@@ -63,7 +63,7 @@ pub async fn render_to_png(path: &Path, model_path: &Path) -> Result<(), Box<dyn
         model.animation.clips.iter().map(|clip| format!("{}: {:.3}s, {} samples", clip.name, clip.end_seconds - clip.start_seconds, clip.frames.len())).collect::<Vec<_>>().join(", ")
     );
     let mut scene = Scene::new();
-    let model_id = scene.add_model(model);
+    let model_id = scene.add_model(model_path.to_path_buf(), model);
     let root_id = scene.create_game_object("Scene Root");
     let object_id = scene
         .spawn_model("Main Model", model_id)

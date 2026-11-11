@@ -1,5 +1,13 @@
 //! Game objects, components, and shared model assets.
 
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+};
+
+use serde::{Deserialize, Serialize};
+
 use crate::{fbx, fbx_animation};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -8,7 +16,7 @@ pub struct ModelId(usize);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ObjectId(usize);
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Transform {
     pub translation: [f32; 3],
     /// Quaternion in `[x, y, z, w]` order.
@@ -210,7 +218,36 @@ impl GameObject {
 
 #[derive(Debug)]
 pub struct ModelAsset {
+    pub source_path: PathBuf,
     pub mesh: fbx::MeshData,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SceneDocument {
+    format_version: u32,
+    objects: Vec<GameObjectDocument>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct GameObjectDocument {
+    name: String,
+    parent: Option<usize>,
+    transform: Transform,
+    components: Vec<ComponentDocument>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ComponentDocument {
+    MeshRenderer {
+        path: String,
+    },
+    Animator {
+        clip_index: usize,
+        elapsed_seconds: f32,
+        playing: bool,
+        looping: bool,
+    },
 }
 
 #[derive(Default)]
@@ -224,9 +261,9 @@ impl Scene {
         Self::default()
     }
 
-    pub fn add_model(&mut self, mesh: fbx::MeshData) -> ModelId {
+    pub fn add_model(&mut self, source_path: PathBuf, mesh: fbx::MeshData) -> ModelId {
         let id = ModelId(self.models.len());
-        self.models.push(ModelAsset { mesh });
+        self.models.push(ModelAsset { source_path, mesh });
         id
     }
 
@@ -296,6 +333,133 @@ impl Scene {
 
     pub fn objects(&self) -> &[GameObject] {
         &self.objects
+    }
+
+    pub fn save_bson(&self, path: &Path) -> Result<(), String> {
+        let objects = self
+            .objects
+            .iter()
+            .map(|object| {
+                let transform = *object.transform();
+                let mut components = Vec::new();
+                for component in object.components() {
+                    match component {
+                        Component::Transform(_) => {}
+                        Component::MeshRenderer(renderer) => {
+                            let model = self.model(renderer.model).ok_or_else(|| {
+                                format!("object '{}' references a missing model", object.name)
+                            })?;
+                            let model_path = model.source_path.to_str().ok_or_else(|| {
+                                format!("model path is not valid UTF-8: {:?}", model.source_path)
+                            })?;
+                            components.push(ComponentDocument::MeshRenderer {
+                                path: model_path.to_owned(),
+                            });
+                        }
+                        Component::Animator(animator) => {
+                            components.push(ComponentDocument::Animator {
+                                clip_index: animator.clip_index,
+                                elapsed_seconds: animator.elapsed_seconds,
+                                playing: animator.playing,
+                                looping: animator.looping,
+                            });
+                        }
+                    }
+                }
+                Ok(GameObjectDocument {
+                    name: object.name.clone(),
+                    parent: object.parent().map(|parent| parent.0),
+                    transform,
+                    components,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let document = SceneDocument {
+            format_version: 1,
+            objects,
+        };
+        let bytes = bson::to_vec(&document).map_err(|error| error.to_string())?;
+        fs::write(path, bytes).map_err(|error| format!("write scene {}: {error}", path.display()))
+    }
+
+    pub fn load_bson(path: &Path) -> Result<Self, String> {
+        let bytes =
+            fs::read(path).map_err(|error| format!("read scene {}: {error}", path.display()))?;
+        let document: SceneDocument =
+            bson::from_slice(&bytes).map_err(|error| format!("decode scene BSON: {error}"))?;
+        if document.format_version != 1 {
+            return Err(format!(
+                "unsupported scene format version {}",
+                document.format_version
+            ));
+        }
+
+        let mut scene = Scene::new();
+        let mut object_ids = Vec::with_capacity(document.objects.len());
+        for object_document in &document.objects {
+            let object_id = scene.create_game_object(object_document.name.clone());
+            *scene
+                .object_mut(object_id)
+                .expect("newly created game object exists")
+                .transform_mut() = object_document.transform;
+            object_ids.push(object_id);
+        }
+
+        let mut loaded_models = HashMap::<String, ModelId>::new();
+        for (index, object_document) in document.objects.iter().enumerate() {
+            let object_id = object_ids[index];
+            if let Some(parent_index) = object_document.parent {
+                let parent_id = *object_ids.get(parent_index).ok_or_else(|| {
+                    format!(
+                        "object '{}' has an invalid parent index",
+                        object_document.name
+                    )
+                })?;
+                if !scene.set_parent(object_id, Some(parent_id)) {
+                    return Err(format!(
+                        "invalid parent relationship for '{}'",
+                        object_document.name
+                    ));
+                }
+            }
+
+            for component in &object_document.components {
+                let restored = match component {
+                    ComponentDocument::MeshRenderer { path } => {
+                        let model_id = if let Some(model_id) = loaded_models.get(path) {
+                            *model_id
+                        } else {
+                            let model_path = PathBuf::from(path);
+                            let model = fbx::load(&model_path).map_err(|error| {
+                                format!(
+                                    "load model referenced by scene {}: {error}",
+                                    model_path.display()
+                                )
+                            })?;
+                            let model_id = scene.add_model(model_path, model);
+                            loaded_models.insert(path.clone(), model_id);
+                            model_id
+                        };
+                        Component::MeshRenderer(MeshRenderer { model: model_id })
+                    }
+                    ComponentDocument::Animator {
+                        clip_index,
+                        elapsed_seconds,
+                        playing,
+                        looping,
+                    } => Component::Animator(Animator {
+                        clip_index: *clip_index,
+                        elapsed_seconds: *elapsed_seconds,
+                        playing: *playing,
+                        looping: *looping,
+                    }),
+                };
+                if !scene.add_component(object_id, restored) {
+                    return Err(format!("duplicate component on '{}'", object_document.name));
+                }
+            }
+        }
+        Ok(scene)
     }
 
     pub fn world_matrix(&self, id: ObjectId) -> Option<[[f32; 4]; 4]> {

@@ -75,6 +75,7 @@ impl Renderer {
         imgui_context: &mut Context,
         model_paths: &[std::path::PathBuf],
         animation_path: Option<&std::path::Path>,
+        scene_path: Option<&std::path::Path>,
     ) -> Result<Self, String> {
         let size = window.inner_size();
         let instance = wgpu::Instance::default();
@@ -150,60 +151,69 @@ impl Renderer {
             config.height,
             "YuriEngine window depth",
         );
-        let mut scene = Scene::new();
-        let root_id = scene.create_game_object("Scene Root");
-        let mut mesh_pipelines = HashMap::new();
-        let source_animation = animation_path
-            .map(|path| fbx_animation::load(path, 30.0).map_err(|error| error.to_string()))
-            .transpose()?;
-        for model_path in model_paths {
-            let mut model = fbx::load(model_path).map_err(|error| error.to_string())?;
-            let animation = if let Some(source) = &source_animation {
-                let (animation, matched_bones) = fbx_animation::retarget(source, &model.animation);
-                eprintln!("Retargeted animation onto {} rig: {} mapped bones / {} target bones / {} clips", model_path.display(), matched_bones, model.animation.bones.len(), animation.clips.len());
-                animation
-            } else {
-                model.animation.clone()
-            };
-            model.animation = animation;
-            eprintln!(
-                "Loaded {} meshes / {} triangles / {} material bindings / {} scene nodes / {} bones / {} animation clips from {}",
-                model.source_meshes,
-                model.triangles,
-                model.materials.len(),
-                model.hierarchy.nodes.len(),
-                model.animation.bones.len(),
-                model.animation.clips.len(),
-                model_path.display()
-            );
-            let model_id = scene.add_model(model);
-            let object_name = model_path
-                .file_stem()
-                .and_then(std::ffi::OsStr::to_str)
-                .unwrap_or("Model");
-            let object_id = scene.spawn_model(object_name, model_id).ok_or_else(|| {
-                format!("failed to create game object for {}", model_path.display())
-            })?;
-            if !scene.set_parent(object_id, Some(root_id)) {
-                return Err(format!(
-                    "failed to parent {} to scene root",
+        let scene = if let Some(scene_path) = scene_path {
+            Scene::load_bson(scene_path)?
+        } else {
+            let mut scene = Scene::new();
+            let root_id = scene.create_game_object("Scene Root");
+            let source_animation = animation_path
+                .map(|path| fbx_animation::load(path, 30.0).map_err(|error| error.to_string()))
+                .transpose()?;
+            for model_path in model_paths {
+                let mut model = fbx::load(model_path).map_err(|error| error.to_string())?;
+                let animation = if let Some(source) = &source_animation {
+                    let (animation, matched_bones) =
+                        fbx_animation::retarget(source, &model.animation);
+                    eprintln!("Retargeted animation onto {} rig: {} mapped bones / {} target bones / {} clips", model_path.display(), matched_bones, model.animation.bones.len(), animation.clips.len());
+                    animation
+                } else {
+                    model.animation.clone()
+                };
+                model.animation = animation;
+                eprintln!(
+                    "Loaded {} meshes / {} triangles / {} material bindings / {} scene nodes / {} bones / {} animation clips from {}",
+                    model.source_meshes,
+                    model.triangles,
+                    model.materials.len(),
+                    model.hierarchy.nodes.len(),
+                    model.animation.bones.len(),
+                    model.animation.clips.len(),
                     model_path.display()
-                ));
+                );
+                let model_id = scene.add_model(model_path.clone(), model);
+                let object_name = model_path
+                    .file_stem()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .unwrap_or("Model");
+                let object_id = scene.spawn_model(object_name, model_id).ok_or_else(|| {
+                    format!("failed to create game object for {}", model_path.display())
+                })?;
+                if !scene.set_parent(object_id, Some(root_id)) {
+                    return Err(format!(
+                        "failed to parent {} to scene root",
+                        model_path.display()
+                    ));
+                }
+                eprintln!(
+                    "Created game object '{}' under '{}'",
+                    scene.object(object_id).unwrap().name,
+                    scene.object(root_id).unwrap().name
+                );
             }
-            eprintln!(
-                "Created game object '{}' under '{}'",
-                scene.object(object_id).unwrap().name,
-                scene.object(root_id).unwrap().name
-            );
-            let model_asset = scene
-                .model(model_id)
-                .ok_or_else(|| "loaded model asset disappeared".to_owned())?;
-            let mesh_pipeline =
-                MeshPipeline::new(&device, &queue, config.format, &model_asset.mesh);
-            mesh_pipelines.insert(object_id, mesh_pipeline);
-        }
-        if mesh_pipelines.is_empty() {
-            return Err("scene has no model game objects".into());
+            scene
+        };
+        let mut mesh_pipelines = HashMap::new();
+        for object in scene.objects() {
+            for component in object.components() {
+                let Component::MeshRenderer(mesh_renderer) = component else {
+                    continue;
+                };
+                let model = scene.model(mesh_renderer.model).ok_or_else(|| {
+                    format!("object '{}' references a missing model", object.name)
+                })?;
+                let pipeline = MeshPipeline::new(&device, &queue, config.format, &model.mesh);
+                mesh_pipelines.insert(object.id, pipeline);
+            }
         }
         let imgui = ImGuiRenderer::new(
             imgui_context,
@@ -365,6 +375,8 @@ struct App {
     selected_object: Option<ObjectId>,
     model_paths: Vec<std::path::PathBuf>,
     animation_path: Option<std::path::PathBuf>,
+    scene_path: Option<std::path::PathBuf>,
+    save_scene_path: Option<std::path::PathBuf>,
 }
 
 impl App {
@@ -372,6 +384,8 @@ impl App {
         smoke_frames: Option<u32>,
         model_paths: Vec<std::path::PathBuf>,
         animation_path: Option<std::path::PathBuf>,
+        scene_path: Option<std::path::PathBuf>,
+        save_scene_path: Option<std::path::PathBuf>,
     ) -> Self {
         let mut imgui = Context::create();
         imgui.set_ini_filename(None);
@@ -386,11 +400,23 @@ impl App {
             selected_object: None,
             model_paths,
             animation_path,
+            scene_path,
+            save_scene_path,
         }
     }
 }
 
 impl ApplicationHandler for App {
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        let (Some(path), Some(renderer)) = (&self.save_scene_path, &self.renderer) else {
+            return;
+        };
+        match renderer.scene.save_bson(path) {
+            Ok(()) => eprintln!("Saved scene to {}", path.display()),
+            Err(error) => eprintln!("Failed to save scene: {error}"),
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -408,6 +434,7 @@ impl ApplicationHandler for App {
                     &mut self.imgui,
                     &self.model_paths,
                     self.animation_path.as_deref(),
+                    self.scene_path.as_deref(),
                 )) {
                     Ok(renderer) => {
                         self.renderer = Some(renderer);
@@ -626,6 +653,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         arg.strip_prefix("--animation=")
             .map(std::path::PathBuf::from)
     });
+    let scene_path = args
+        .iter()
+        .find_map(|arg| arg.strip_prefix("--scene=").map(std::path::PathBuf::from));
+    let save_scene_path = args.iter().find_map(|arg| {
+        arg.strip_prefix("--save-scene=")
+            .map(std::path::PathBuf::from)
+    });
+    if scene_path.is_some() && (!model_paths.is_empty() || animation_path.is_some()) {
+        return Err("--scene cannot be combined with --model or --animation".into());
+    }
     if let Some(path) = args
         .iter()
         .find_map(|arg| arg.strip_prefix("--capture-frame=").map(str::to_owned))
@@ -644,7 +681,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let smoke_frames = args
         .iter()
         .find_map(|arg| arg.strip_prefix("--smoke-frames=")?.parse::<u32>().ok());
-    event_loop.run_app(&mut App::new(smoke_frames, model_paths, animation_path))?;
+    event_loop.run_app(&mut App::new(
+        smoke_frames,
+        model_paths,
+        animation_path,
+        scene_path,
+        save_scene_path,
+    ))?;
     Ok(())
 }
 

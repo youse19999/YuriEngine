@@ -23,6 +23,18 @@ cargo run -- --model=assets/character.fbx --model=assets/prop.fbx
 cargo run -- --model=assets/character.fbx --animation=assets/walk.fbx
 ```
 
+Scene files use BSON. Starting with `--save-scene` saves the current scene when the application
+closes; `--scene` loads a saved scene and its FBX paths:
+
+```sh
+cargo run -- --model=assets/character.fbx --save-scene=assets/demo.bson
+cargo run -- --scene=assets/demo.bson --save-scene=assets/demo.bson
+```
+
+The BSON document stores object names, parent indices, local transforms, animator playback state,
+and each `MeshRenderer` FBX path as a string. Model data and textures are re-imported from those
+paths when the scene is loaded.
+
 The application opens an 800 × 600 window and exits when the window is closed. For an automated
 window/present smoke check, run `cargo run -- --smoke-frames=5`; it exits after five frames have
 been presented. Linux CI runs this under Xvfb, while Windows and macOS CI use their hosted GUI
