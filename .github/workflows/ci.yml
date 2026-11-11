@@ -63,9 +63,13 @@ jobs:
         if: matrix.os == 'macos-latest'
       - name: Build
         run: cargo build --locked
+        if: matrix.os != 'macos-latest'
+      - name: Build (macOS)
+        run: cargo build --locked --no-default-features
+        if: matrix.os == 'macos-latest'
       - name: Present frames (Linux)
         if: runner.os == 'Linux'
-        run: xvfb-run -a cargo run --locked -- --smoke-frames=5
+        run: xvfb-run -a cargo run --locked --no-default-features -- --smoke-frames=5
       - name: Present frames (Windows and macOS)
         if: runner.os != 'Linux'
-        run: cargo run --locked -- --smoke-frames=5
+        run: cargo run --locked --no-default-features -- --smoke-frames=5
