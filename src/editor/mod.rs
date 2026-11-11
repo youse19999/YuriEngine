@@ -5,7 +5,7 @@ pub mod scene_menu;
 use imgui::{Condition, Ui};
 
 pub use hierarchy::build_hierarchy;
-pub use inspector::build_inspector;
+pub use inspector::{build_inspector, ComponentJsonEdit, InspectorState};
 
 pub(crate) fn build_sample_ui(ui: &Ui) {
     ui.window("YuriEngine ImGui")

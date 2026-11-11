@@ -250,6 +250,25 @@ enum ComponentDocument {
     },
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ComponentJson {
+    Transform {
+        translation: [f32; 3],
+        rotation: [f32; 4],
+        scale: [f32; 3],
+    },
+    MeshRenderer {
+        path: String,
+    },
+    Animator {
+        clip_index: usize,
+        elapsed_seconds: f32,
+        playing: bool,
+        looping: bool,
+    },
+}
+
 #[derive(Default)]
 pub struct Scene {
     models: Vec<ModelAsset>,
@@ -333,6 +352,129 @@ impl Scene {
 
     pub fn objects(&self) -> &[GameObject] {
         &self.objects
+    }
+
+    pub fn component_json(
+        &self,
+        object_id: ObjectId,
+        component_index: usize,
+    ) -> Result<String, String> {
+        let object = self
+            .object(object_id)
+            .ok_or_else(|| "selected game object no longer exists".to_owned())?;
+        let component = object
+            .components()
+            .get(component_index)
+            .ok_or_else(|| "selected component no longer exists".to_owned())?;
+        let document = match component {
+            Component::Transform(transform) => ComponentJson::Transform {
+                translation: transform.translation,
+                rotation: transform.rotation,
+                scale: transform.scale,
+            },
+            Component::MeshRenderer(renderer) => {
+                let model = self
+                    .model(renderer.model)
+                    .ok_or_else(|| "mesh renderer references a missing model".to_owned())?;
+                let path = model
+                    .source_path
+                    .to_str()
+                    .ok_or_else(|| "model path is not valid UTF-8".to_owned())?;
+                ComponentJson::MeshRenderer {
+                    path: path.to_owned(),
+                }
+            }
+            Component::Animator(animator) => ComponentJson::Animator {
+                clip_index: animator.clip_index,
+                elapsed_seconds: animator.elapsed_seconds,
+                playing: animator.playing,
+                looping: animator.looping,
+            },
+        };
+        serde_json::to_string_pretty(&document).map_err(|error| error.to_string())
+    }
+
+    /// Returns true when the edited component changes a model and its GPU pipeline must be rebuilt.
+    pub fn set_component_json(
+        &mut self,
+        object_id: ObjectId,
+        component_index: usize,
+        json: &str,
+    ) -> Result<bool, String> {
+        let document: ComponentJson = serde_json::from_str(json)
+            .map_err(|error| format!("invalid component JSON: {error}"))?;
+        let current = self
+            .object(object_id)
+            .and_then(|object| object.components().get(component_index))
+            .ok_or_else(|| "selected component no longer exists".to_owned())?;
+
+        match (current, document) {
+            (
+                Component::Transform(_),
+                ComponentJson::Transform {
+                    translation,
+                    rotation,
+                    scale,
+                },
+            ) => {
+                *self
+                    .object_mut(object_id)
+                    .expect("validated game object exists")
+                    .transform_mut() = Transform {
+                    translation,
+                    rotation,
+                    scale,
+                };
+                Ok(false)
+            }
+            (Component::MeshRenderer(_), ComponentJson::MeshRenderer { path }) => {
+                let model_path = PathBuf::from(path);
+                let model_id = if let Some((index, _)) = self
+                    .models
+                    .iter()
+                    .enumerate()
+                    .find(|(_, model)| model.source_path == model_path)
+                {
+                    ModelId(index)
+                } else {
+                    let model = fbx::load(&model_path)
+                        .map_err(|error| format!("load model {}: {error}", model_path.display()))?;
+                    self.add_model(model_path, model)
+                };
+                let Some(Component::MeshRenderer(renderer)) = self
+                    .object_mut(object_id)
+                    .and_then(|object| object.components.get_mut(component_index))
+                else {
+                    return Err("selected component is no longer a MeshRenderer".to_owned());
+                };
+                renderer.model = model_id;
+                Ok(true)
+            }
+            (
+                Component::Animator(_),
+                ComponentJson::Animator {
+                    clip_index,
+                    elapsed_seconds,
+                    playing,
+                    looping,
+                },
+            ) => {
+                let Some(Component::Animator(animator)) = self
+                    .object_mut(object_id)
+                    .and_then(|object| object.components.get_mut(component_index))
+                else {
+                    return Err("selected component is no longer an Animator".to_owned());
+                };
+                *animator = Animator {
+                    clip_index,
+                    elapsed_seconds,
+                    playing,
+                    looping,
+                };
+                Ok(false)
+            }
+            _ => Err("JSON component type does not match the selected component".to_owned()),
+        }
     }
 
     pub fn save_bson(&self, path: &Path) -> Result<(), String> {

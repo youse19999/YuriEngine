@@ -243,6 +243,39 @@ impl Renderer {
     }
 
     fn replace_scene(&mut self, scene: Scene) -> Result<(), String> {
+        let mesh_pipelines =
+            Self::build_mesh_pipelines(&self.device, &self.queue, self.config.format, &scene)?;
+        self.scene = scene;
+        self.mesh_pipelines = mesh_pipelines;
+        Ok(())
+    }
+
+    fn set_component_json(
+        &mut self,
+        object_id: ObjectId,
+        component_index: usize,
+        json: &str,
+    ) -> Result<(), String> {
+        let rebuild_pipelines = self
+            .scene
+            .set_component_json(object_id, component_index, json)?;
+        if rebuild_pipelines {
+            self.mesh_pipelines = Self::build_mesh_pipelines(
+                &self.device,
+                &self.queue,
+                self.config.format,
+                &self.scene,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn build_mesh_pipelines(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        format: wgpu::TextureFormat,
+        scene: &Scene,
+    ) -> Result<HashMap<ObjectId, MeshPipeline>, String> {
         let mut mesh_pipelines = HashMap::new();
         for object in scene.objects() {
             for component in object.components() {
@@ -252,14 +285,11 @@ impl Renderer {
                 let model = scene.model(mesh_renderer.model).ok_or_else(|| {
                     format!("object '{}' references a missing model", object.name)
                 })?;
-                let pipeline =
-                    MeshPipeline::new(&self.device, &self.queue, self.config.format, &model.mesh);
+                let pipeline = MeshPipeline::new(device, queue, format, &model.mesh);
                 mesh_pipelines.insert(object.id, pipeline);
             }
         }
-        self.scene = scene;
-        self.mesh_pipelines = mesh_pipelines;
-        Ok(())
+        Ok(mesh_pipelines)
     }
 
     fn resize(&mut self, width: u32, height: u32) {
@@ -400,6 +430,7 @@ struct App {
     scene_path: Option<std::path::PathBuf>,
     save_scene_path: Option<std::path::PathBuf>,
     scene_menu: SceneMenu,
+    inspector: editor::InspectorState,
 }
 
 impl App {
@@ -427,6 +458,7 @@ impl App {
             scene_path,
             save_scene_path,
             scene_menu,
+            inspector: editor::InspectorState::default(),
         }
     }
 
@@ -441,6 +473,7 @@ impl App {
                 match renderer.replace_scene(scene) {
                     Ok(()) => {
                         self.selected_object = None;
+                        self.inspector.reset();
                         self.scene_menu.clear_path();
                         self.save_scene_path = None;
                         self.scene_menu.set_status("Created a new scene");
@@ -452,6 +485,7 @@ impl App {
                 Ok(scene) => match renderer.replace_scene(scene) {
                     Ok(()) => {
                         self.selected_object = None;
+                        self.inspector.reset();
                         self.scene_menu.set_path(&path);
                         if self.save_scene_path.is_some() {
                             self.save_scene_path = Some(path.clone());
@@ -472,6 +506,16 @@ impl App {
                 }
                 Err(error) => self.scene_menu.set_status(error),
             },
+        }
+    }
+
+    fn apply_component_json_edit(&mut self, edit: editor::ComponentJsonEdit) {
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
+        match renderer.set_component_json(edit.object_id, edit.component_index, &edit.json) {
+            Ok(()) => self.inspector.set_status("Component JSON applied"),
+            Err(error) => self.inspector.set_status(error),
         }
     }
 }
@@ -545,6 +589,7 @@ impl ApplicationHandler for App {
             },
         );
         let mut pending_scene_action = None;
+        let mut pending_component_edit = None;
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
@@ -566,7 +611,12 @@ impl ApplicationHandler for App {
                 pending_scene_action = self.scene_menu.draw(ui);
                 if let Some(renderer) = self.renderer.as_mut() {
                     editor::build_hierarchy(ui, &mut renderer.scene, &mut self.selected_object);
-                    editor::build_inspector(ui, &mut renderer.scene, &mut self.selected_object);
+                    pending_component_edit = editor::build_inspector(
+                        ui,
+                        &mut renderer.scene,
+                        &mut self.selected_object,
+                        &mut self.inspector,
+                    );
                 }
                 self.imgui_platform.prepare_render(ui, window);
                 let draw_data = self.imgui.render();
@@ -592,6 +642,9 @@ impl ApplicationHandler for App {
             _ => {}
         }
         window.request_redraw();
+        if let Some(edit) = pending_component_edit {
+            self.apply_component_json_edit(edit);
+        }
         if let Some(action) = pending_scene_action {
             self.apply_scene_menu_action(action);
         }
