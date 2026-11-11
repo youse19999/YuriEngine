@@ -1,4 +1,8 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 
 use imgui::{Condition, Context, Ui};
 use imgui_wgpu::{Renderer as ImGuiRenderer, RendererConfig};
@@ -16,8 +20,10 @@ mod fbx_hierarchy;
 mod fbx_materials;
 mod fbx_skin;
 mod mesh;
+mod scene;
 mod texture;
 use mesh::MeshPipeline;
+use scene::{Component, ObjectId, Scene};
 
 const PINK_CLEAR: wgpu::Color = wgpu::Color {
     r: 1.0,
@@ -56,10 +62,9 @@ struct Renderer {
     config: wgpu::SurfaceConfiguration,
     _depth_texture: wgpu::Texture,
     depth_view: wgpu::TextureView,
-    mesh: MeshPipeline,
-    mesh_bounds: ([f32; 3], [f32; 3]),
-    animation: fbx_animation::AnimationAsset,
-    animation_started: std::time::Instant,
+    scene: Scene,
+    mesh_pipelines: HashMap<ObjectId, MeshPipeline>,
+    last_update: Instant,
     imgui: ImGuiRenderer,
     uncaptured_error: Arc<Mutex<Option<String>>>,
 }
@@ -68,7 +73,7 @@ impl Renderer {
     async fn new(
         window: Arc<Window>,
         imgui_context: &mut Context,
-        model_path: &std::path::Path,
+        model_paths: &[std::path::PathBuf],
         animation_path: Option<&std::path::Path>,
     ) -> Result<Self, String> {
         let size = window.inner_size();
@@ -145,28 +150,61 @@ impl Renderer {
             config.height,
             "YuriEngine window depth",
         );
-        let model = fbx::load(model_path).map_err(|error| error.to_string())?;
-        let (animation, matched_bones) = if let Some(path) = animation_path {
-            let source = fbx_animation::load(path, 30.0).map_err(|error| error.to_string())?;
-            let result = fbx_animation::retarget(&source, &model.animation);
-            eprintln!("Retargeted animation {} onto model rig: {} mapped bones / {} target bones / {} clips", path.display(), result.1, model.animation.bones.len(), result.0.clips.len());
-            result
-        } else {
-            (model.animation.clone(), 0)
-        };
-        let _ = matched_bones;
-        eprintln!(
-            "Loaded {} meshes / {} triangles / {} material bindings / {} scene nodes / {} bones / {} animation clips from {}",
-            model.source_meshes,
-            model.triangles,
-            model.materials.len(),
-            model.hierarchy.nodes.len(),
-            model.animation.bones.len(),
-            model.animation.clips.len(),
-            model_path.display()
-        );
-        let mesh_bounds = (model.bounds_min, model.bounds_max);
-        let mesh = MeshPipeline::new(&device, &queue, config.format, &model);
+        let mut scene = Scene::new();
+        let root_id = scene.create_game_object("Scene Root");
+        let mut mesh_pipelines = HashMap::new();
+        let source_animation = animation_path
+            .map(|path| fbx_animation::load(path, 30.0).map_err(|error| error.to_string()))
+            .transpose()?;
+        for model_path in model_paths {
+            let mut model = fbx::load(model_path).map_err(|error| error.to_string())?;
+            let animation = if let Some(source) = &source_animation {
+                let (animation, matched_bones) = fbx_animation::retarget(source, &model.animation);
+                eprintln!("Retargeted animation onto {} rig: {} mapped bones / {} target bones / {} clips", model_path.display(), matched_bones, model.animation.bones.len(), animation.clips.len());
+                animation
+            } else {
+                model.animation.clone()
+            };
+            model.animation = animation;
+            eprintln!(
+                "Loaded {} meshes / {} triangles / {} material bindings / {} scene nodes / {} bones / {} animation clips from {}",
+                model.source_meshes,
+                model.triangles,
+                model.materials.len(),
+                model.hierarchy.nodes.len(),
+                model.animation.bones.len(),
+                model.animation.clips.len(),
+                model_path.display()
+            );
+            let model_id = scene.add_model(model);
+            let object_name = model_path
+                .file_stem()
+                .and_then(std::ffi::OsStr::to_str)
+                .unwrap_or("Model");
+            let object_id = scene.spawn_model(object_name, model_id).ok_or_else(|| {
+                format!("failed to create game object for {}", model_path.display())
+            })?;
+            if !scene.set_parent(object_id, Some(root_id)) {
+                return Err(format!(
+                    "failed to parent {} to scene root",
+                    model_path.display()
+                ));
+            }
+            eprintln!(
+                "Created game object '{}' under '{}'",
+                scene.object(object_id).unwrap().name,
+                scene.object(root_id).unwrap().name
+            );
+            let model_asset = scene
+                .model(model_id)
+                .ok_or_else(|| "loaded model asset disappeared".to_owned())?;
+            let mesh_pipeline =
+                MeshPipeline::new(&device, &queue, config.format, &model_asset.mesh);
+            mesh_pipelines.insert(object_id, mesh_pipeline);
+        }
+        if mesh_pipelines.is_empty() {
+            return Err("scene has no model game objects".into());
+        }
         let imgui = ImGuiRenderer::new(
             imgui_context,
             &device,
@@ -184,10 +222,9 @@ impl Renderer {
             config,
             _depth_texture: depth_texture,
             depth_view,
-            mesh,
-            mesh_bounds,
-            animation,
-            animation_started: std::time::Instant::now(),
+            scene,
+            mesh_pipelines,
+            last_update: Instant::now(),
             imgui,
             uncaptured_error,
         })
@@ -238,6 +275,9 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("FBX frame"),
             });
+        let delta_seconds = self.last_update.elapsed().as_secs_f32();
+        self.last_update = Instant::now();
+        self.scene.update(delta_seconds);
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("FBX mesh pass"),
@@ -260,25 +300,36 @@ impl Renderer {
                 }),
                 ..Default::default()
             });
-            let clip = self.animation.clips.first();
-            let frame = clip.and_then(|clip| {
-                if clip.frames.is_empty() {
-                    return None;
+            for object in self.scene.objects() {
+                for component in object.components() {
+                    let Component::MeshRenderer(mesh_renderer) = component else {
+                        continue;
+                    };
+                    let Some(model) = self.scene.model(mesh_renderer.model) else {
+                        continue;
+                    };
+                    let Some(pipeline) = self.mesh_pipelines.get(&object.id) else {
+                        continue;
+                    };
+                    let Some(world_transform) = self.scene.world_matrix(object.id) else {
+                        continue;
+                    };
+                    let frame = object
+                        .animator()
+                        .and_then(|animator| animator.sample(&model.mesh.animation));
+                    let palette = fbx_animation::skin_palette(&model.mesh.animation, frame);
+                    let bounds = (model.mesh.bounds_min, model.mesh.bounds_max);
+                    pipeline.draw(
+                        &self.queue,
+                        &mut pass,
+                        bounds,
+                        self.config.width,
+                        self.config.height,
+                        Some(&palette),
+                        world_transform,
+                    );
                 }
-                let duration = (clip.end_seconds - clip.start_seconds).max(1.0 / 30.0);
-                let t = self.animation_started.elapsed().as_secs_f32() % duration;
-                let index = ((t * 30.0).floor() as usize).min(clip.frames.len() - 1);
-                clip.frames.get(index)
-            });
-            let palette = fbx_animation::skin_palette(&self.animation, frame);
-            self.mesh.draw(
-                &self.queue,
-                &mut pass,
-                self.mesh_bounds,
-                self.config.width,
-                self.config.height,
-                Some(&palette),
-            );
+            }
         }
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -311,14 +362,14 @@ struct App {
     imgui_platform: WinitPlatform,
     smoke_frames: Option<u32>,
     presented_frames: u32,
-    model_path: std::path::PathBuf,
+    model_paths: Vec<std::path::PathBuf>,
     animation_path: Option<std::path::PathBuf>,
 }
 
 impl App {
     fn new(
         smoke_frames: Option<u32>,
-        model_path: std::path::PathBuf,
+        model_paths: Vec<std::path::PathBuf>,
         animation_path: Option<std::path::PathBuf>,
     ) -> Self {
         let mut imgui = Context::create();
@@ -331,7 +382,7 @@ impl App {
             imgui,
             imgui_platform,
             presented_frames: 0,
-            model_path,
+            model_paths,
             animation_path,
         }
     }
@@ -353,7 +404,7 @@ impl ApplicationHandler for App {
                 match pollster::block_on(Renderer::new(
                     window.clone(),
                     &mut self.imgui,
-                    &self.model_path,
+                    &self.model_paths,
                     self.animation_path.as_deref(),
                 )) {
                     Ok(renderer) => {
@@ -563,12 +614,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         return Ok(());
     }
-    let model_path = args
+    let mut model_paths = args
         .iter()
-        .find_map(|arg| arg.strip_prefix("--model=").map(std::path::PathBuf::from))
-        .unwrap_or_else(|| {
-            std::path::PathBuf::from(r"G:\Tsugu\sample\MUMUS_Avatar\fbx\Mumus_fbx.fbx")
-        });
+        .filter_map(|arg| arg.strip_prefix("--model=").map(std::path::PathBuf::from))
+        .collect::<Vec<_>>();
+    if model_paths.is_empty() {
+        model_paths.push(std::path::PathBuf::from(
+            r"G:\Tsugu\sample\MUMUS_Avatar\fbx\Mumus_fbx.fbx",
+        ));
+    }
     let animation_path = args.iter().find_map(|arg| {
         arg.strip_prefix("--animation=")
             .map(std::path::PathBuf::from)
@@ -579,7 +633,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         return pollster::block_on(capture::render_to_png(
             std::path::Path::new(&path),
-            &model_path,
+            model_paths
+                .first()
+                .expect("a default model path is inserted"),
         ));
     }
 
@@ -588,7 +644,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let smoke_frames = args
         .iter()
         .find_map(|arg| arg.strip_prefix("--smoke-frames=")?.parse::<u32>().ok());
-    event_loop.run_app(&mut App::new(smoke_frames, model_path, animation_path))?;
+    event_loop.run_app(&mut App::new(smoke_frames, model_paths, animation_path))?;
     Ok(())
 }
 

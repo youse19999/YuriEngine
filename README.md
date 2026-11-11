@@ -9,6 +9,20 @@ cargo build
 cargo build --release
 ```
 
+## Scene and game objects
+
+Imported FBX files are stored as model assets in a `Scene`. Each spawned `GameObject` has a
+transform and components such as `MeshRenderer` and `Animator`; parent transforms are combined
+when drawing. The same model asset can be referenced by more than one object.
+
+Pass `--model` more than once to create one game object per FBX. An optional animation FBX is
+retargeted onto each model:
+
+```sh
+cargo run -- --model=assets/character.fbx --model=assets/prop.fbx
+cargo run -- --model=assets/character.fbx --animation=assets/walk.fbx
+```
+
 The application opens an 800 × 600 window and exits when the window is closed. For an automated
 window/present smoke check, run `cargo run -- --smoke-frames=5`; it exits after five frames have
 been presented. Linux CI runs this under Xvfb, while Windows and macOS CI use their hosted GUI

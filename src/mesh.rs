@@ -257,11 +257,15 @@ impl MeshPipeline {
         width: u32,
         height: u32,
         skin_palette: Option<&[[[f32; 4]; 4]]>,
+        world_transform: [[f32; 4]; 4],
     ) {
         if let Some(palette) = skin_palette.filter(|palette| !palette.is_empty()) {
             queue.write_buffer(&self.skin_buffer, 0, bytemuck::cast_slice(palette));
         }
-        let matrix = camera_matrix(bounds, width.max(1) as f32 / height.max(1) as f32);
+        let matrix = crate::scene::multiply_matrices(
+            camera_matrix(bounds, width.max(1) as f32 / height.max(1) as f32),
+            world_transform,
+        );
         queue.write_buffer(
             &self.uniform_buffer,
             0,

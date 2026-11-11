@@ -1,9 +1,14 @@
+use std::collections::HashMap;
 use std::error::Error;
 use std::fs::File;
 use std::path::Path;
 use std::sync::mpsc;
 
-use crate::{build_sample_ui, fbx, mesh::MeshPipeline};
+use crate::{
+    build_sample_ui, fbx, fbx_animation,
+    mesh::MeshPipeline,
+    scene::{Component, Scene},
+};
 use imgui::Context;
 use imgui_wgpu::{Renderer as ImGuiRenderer, RendererConfig};
 
@@ -57,8 +62,25 @@ pub async fn render_to_png(path: &Path, model_path: &Path) -> Result<(), Box<dyn
         model.animation.skinned_meshes.len(),
         model.animation.clips.iter().map(|clip| format!("{}: {:.3}s, {} samples", clip.name, clip.end_seconds - clip.start_seconds, clip.frames.len())).collect::<Vec<_>>().join(", ")
     );
-    let bounds = (model.bounds_min, model.bounds_max);
-    let mesh = MeshPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, &model);
+    let mut scene = Scene::new();
+    let model_id = scene.add_model(model);
+    let root_id = scene.create_game_object("Scene Root");
+    let object_id = scene
+        .spawn_model("Main Model", model_id)
+        .ok_or("failed to create game object for model")?;
+    if !scene.set_parent(object_id, Some(root_id)) {
+        return Err("failed to parent model game object to scene root".into());
+    }
+    let model_asset = scene
+        .model(model_id)
+        .ok_or("loaded model asset disappeared")?;
+    let mesh_pipeline = MeshPipeline::new(
+        &device,
+        &queue,
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+        &model_asset.mesh,
+    );
+    let mesh_pipelines = HashMap::from([(object_id, mesh_pipeline)]);
 
     let mut context = Context::create();
     context.set_ini_filename(None);
@@ -117,7 +139,36 @@ pub async fn render_to_png(path: &Path, model_path: &Path) -> Result<(), Box<dyn
             }),
             ..Default::default()
         });
-        mesh.draw(&queue, &mut pass, bounds, WIDTH, HEIGHT, None);
+        for object in scene.objects() {
+            for component in object.components() {
+                let Component::MeshRenderer(renderer) = component else {
+                    continue;
+                };
+                let Some(model) = scene.model(renderer.model) else {
+                    continue;
+                };
+                let Some(mesh) = mesh_pipelines.get(&object.id) else {
+                    continue;
+                };
+                let Some(world_transform) = scene.world_matrix(object.id) else {
+                    continue;
+                };
+                let frame = object
+                    .animator()
+                    .and_then(|animator| animator.sample(&model.mesh.animation));
+                let palette = fbx_animation::skin_palette(&model.mesh.animation, frame);
+                let bounds = (model.mesh.bounds_min, model.mesh.bounds_max);
+                mesh.draw(
+                    &queue,
+                    &mut pass,
+                    bounds,
+                    WIDTH,
+                    HEIGHT,
+                    Some(&palette),
+                    world_transform,
+                );
+            }
+        }
     }
     {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
