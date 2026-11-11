@@ -29,6 +29,20 @@ jobs:
           name: yuriengine-windows-x86_64
           path: target/release/yuriengine-inspection.exe
           if-no-files-found: error
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install maturin
+        run: python -m pip install "maturin>=1.8,<2.0"
+      - name: Build Windows Python wheel
+        run: maturin build --locked --release --interpreter python --out dist
+      - name: Upload Windows Python wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: yuriengine-python-wheel-windows-x86_64
+          path: dist/*.whl
+          if-no-files-found: error
 
   validate:
     name: ${{ matrix.os }}
