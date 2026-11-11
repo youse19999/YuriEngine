@@ -4,7 +4,7 @@ use std::{
     time::Instant,
 };
 
-use imgui::{Condition, Context, Ui};
+use imgui::{Condition, Context, TreeNodeFlags, Ui};
 use imgui_wgpu::{Renderer as ImGuiRenderer, RendererConfig};
 use imgui_winit_support::{HiDpiMode, WinitPlatform};
 use wgpu::CurrentSurfaceTexture;
@@ -362,6 +362,7 @@ struct App {
     imgui_platform: WinitPlatform,
     smoke_frames: Option<u32>,
     presented_frames: u32,
+    selected_object: Option<ObjectId>,
     model_paths: Vec<std::path::PathBuf>,
     animation_path: Option<std::path::PathBuf>,
 }
@@ -382,6 +383,7 @@ impl App {
             imgui,
             imgui_platform,
             presented_frames: 0,
+            selected_object: None,
             model_paths,
             animation_path,
         }
@@ -463,7 +465,9 @@ impl ApplicationHandler for App {
                     return;
                 }
                 let ui = self.imgui.frame();
-                build_sample_ui(ui);
+                if let Some(renderer) = self.renderer.as_mut() {
+                    build_scene_ui(ui, &mut renderer.scene, &mut self.selected_object);
+                }
                 self.imgui_platform.prepare_render(ui, window);
                 let draw_data = self.imgui.render();
                 if let Some(renderer) = self.renderer.as_mut() {
@@ -646,6 +650,91 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .find_map(|arg| arg.strip_prefix("--smoke-frames=")?.parse::<u32>().ok());
     event_loop.run_app(&mut App::new(smoke_frames, model_paths, animation_path))?;
     Ok(())
+}
+
+fn draw_hierarchy_nodes(
+    ui: &Ui,
+    scene: &Scene,
+    parent: Option<ObjectId>,
+    selected_object: &mut Option<ObjectId>,
+) {
+    let children = scene
+        .objects()
+        .iter()
+        .filter(|object| object.parent() == parent)
+        .map(|object| {
+            let has_children = scene
+                .objects()
+                .iter()
+                .any(|candidate| candidate.parent() == Some(object.id));
+            (object.id, object.name.clone(), has_children)
+        })
+        .collect::<Vec<_>>();
+
+    for (object_id, name, has_children) in children {
+        let label = format!("{name}##{object_id:?}");
+        let node = ui
+            .tree_node_config(label.as_str())
+            .selected(*selected_object == Some(object_id))
+            .flags(TreeNodeFlags::SPAN_AVAIL_WIDTH)
+            .leaf(!has_children)
+            .tree_push_on_open(has_children);
+        let open = node.push();
+        if ui.is_item_clicked() {
+            *selected_object = Some(object_id);
+        }
+        if let Some(token) = open {
+            draw_hierarchy_nodes(ui, scene, Some(object_id), selected_object);
+            token.pop();
+        }
+    }
+}
+
+fn build_scene_ui(ui: &Ui, scene: &mut Scene, selected_object: &mut Option<ObjectId>) {
+    ui.window("Scene")
+        .size([340.0, 580.0], Condition::FirstUseEver)
+        .build(|| {
+            ui.text("Hierarchy");
+            ui.separator();
+            draw_hierarchy_nodes(ui, scene, None, selected_object);
+
+            if ui.button("Add Empty GameObject") {
+                let object_id = scene.create_game_object("GameObject");
+                if let Some(parent) = *selected_object {
+                    scene.set_parent(object_id, Some(parent));
+                }
+                *selected_object = Some(object_id);
+            }
+
+            ui.separator();
+            ui.text("Inspector");
+            if let Some(object_id) = *selected_object {
+                if let Some(object) = scene.object_mut(object_id) {
+                    ui.text(format!("Name: {}", object.name));
+                    ui.input_float3("Position", &mut object.transform.translation)
+                        .build();
+                    ui.input_float4("Rotation (x, y, z, w)", &mut object.transform.rotation)
+                        .build();
+                    ui.input_float3("Scale", &mut object.transform.scale)
+                        .build();
+                    ui.separator();
+                    ui.text("Components");
+                    for component in object.components() {
+                        match component {
+                            Component::MeshRenderer(_) => ui.bullet_text("MeshRenderer"),
+                            Component::Animator(animator) => {
+                                ui.bullet_text(format!("Animator (clip {})", animator.clip_index))
+                            }
+                        }
+                    }
+                } else {
+                    *selected_object = None;
+                    ui.text("No object selected");
+                }
+            } else {
+                ui.text("Select an object to edit its transform.");
+            }
+        });
 }
 
 pub(crate) fn build_sample_ui(ui: &Ui) {
