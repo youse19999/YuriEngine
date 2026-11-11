@@ -1,14 +1,23 @@
 use std::sync::{Arc, Mutex};
 
+#[cfg(not(target_arch = "wasm32"))]
 use imgui::{Condition, Context, Ui};
+#[cfg(not(target_arch = "wasm32"))]
 use imgui_wgpu::{Renderer as ImGuiRenderer, RendererConfig};
+#[cfg(not(target_arch = "wasm32"))]
 use imgui_winit_support::{HiDpiMode, WinitPlatform};
 use wgpu::CurrentSurfaceTexture;
+#[cfg(not(target_os = "emscripten"))]
 use winit::application::ApplicationHandler;
+#[cfg(not(target_os = "emscripten"))]
 use winit::event::WindowEvent;
+#[cfg(not(target_os = "emscripten"))]
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+#[cfg(not(target_os = "emscripten"))]
 use winit::window::{Window, WindowId};
 
+#[cfg(not(target_os = "emscripten"))]
+#[cfg(not(target_arch = "wasm32"))]
 mod capture;
 mod fbx;
 mod fbx_animation;
@@ -60,11 +69,13 @@ struct Renderer {
     mesh_bounds: ([f32; 3], [f32; 3]),
     animation: fbx_animation::AnimationAsset,
     animation_started: std::time::Instant,
+    #[cfg(not(target_arch = "wasm32"))]
     imgui: ImGuiRenderer,
     uncaptured_error: Arc<Mutex<Option<String>>>,
 }
 
 impl Renderer {
+    #[cfg(not(target_arch = "wasm32"))]
     async fn new(
         window: Arc<Window>,
         imgui_context: &mut Context,
@@ -76,6 +87,27 @@ impl Renderer {
         let surface = instance
             .create_surface(window)
             .map_err(|e| format!("create surface: {e}"))?;
+        Self::new_with_surface(
+            instance,
+            surface,
+            size.width,
+            size.height,
+            imgui_context,
+            model_path,
+            animation_path,
+        )
+        .await
+    }
+
+    async fn new_with_surface(
+        instance: wgpu::Instance,
+        surface: wgpu::Surface<'static>,
+        width: u32,
+        height: u32,
+        #[cfg(not(target_arch = "wasm32"))] imgui_context: &mut Context,
+        model_path: &std::path::Path,
+        animation_path: Option<&std::path::Path>,
+    ) -> Result<Self, String> {
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::default(),
@@ -130,7 +162,7 @@ impl Renderer {
             .first()
             .ok_or_else(|| "surface exposes no alpha modes".to_owned())?;
         let config = surface
-            .get_default_config(&adapter, size.width.max(1), size.height.max(1))
+            .get_default_config(&adapter, width.max(1), height.max(1))
             .ok_or_else(|| "surface has no default configuration".to_owned())?;
         let config = wgpu::SurfaceConfiguration {
             format,
@@ -167,6 +199,7 @@ impl Renderer {
         );
         let mesh_bounds = (model.bounds_min, model.bounds_max);
         let mesh = MeshPipeline::new(&device, &queue, config.format, &model);
+        #[cfg(not(target_arch = "wasm32"))]
         let imgui = ImGuiRenderer::new(
             imgui_context,
             &device,
@@ -176,7 +209,6 @@ impl Renderer {
                 ..Default::default()
             },
         );
-
         Ok(Self {
             surface,
             device,
@@ -188,6 +220,7 @@ impl Renderer {
             mesh_bounds,
             animation,
             animation_started: std::time::Instant::now(),
+            #[cfg(not(target_arch = "wasm32"))]
             imgui,
             uncaptured_error,
         })
@@ -206,7 +239,10 @@ impl Renderer {
         self.depth_view = depth_view;
     }
 
-    fn render(&mut self, draw_data: &imgui::DrawData) -> Result<bool, String> {
+    fn render(
+        &mut self,
+        #[cfg(not(target_arch = "wasm32"))] draw_data: &imgui::DrawData,
+    ) -> Result<bool, String> {
         if let Some(error) = self
             .uncaptured_error
             .lock()
@@ -280,6 +316,7 @@ impl Renderer {
                 Some(&palette),
             );
         }
+        #[cfg(not(target_arch = "wasm32"))]
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("ImGui render pass"),
@@ -304,6 +341,7 @@ impl Renderer {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 struct App {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
@@ -315,6 +353,7 @@ struct App {
     animation_path: Option<std::path::PathBuf>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl App {
     fn new(
         smoke_frames: Option<u32>,
@@ -337,6 +376,7 @@ impl App {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
@@ -446,6 +486,126 @@ impl ApplicationHandler for App {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+struct BrowserApp {
+    window: Option<Arc<Window>>,
+    renderer: std::rc::Rc<std::cell::RefCell<Option<Renderer>>>,
+    model_path: std::path::PathBuf,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl ApplicationHandler for BrowserApp {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_some() {
+            return;
+        }
+
+        use winit::platform::web::WindowAttributesExtWebSys;
+
+        let attributes = Window::default_attributes()
+            .with_title("YuriEngine")
+            .with_inner_size(winit::dpi::LogicalSize::new(800.0, 600.0))
+            .with_append(true);
+        let window = match event_loop.create_window(attributes) {
+            Ok(window) => Arc::new(window),
+            Err(error) => {
+                eprintln!("Failed to create browser canvas window: {error}");
+                event_loop.exit();
+                return;
+            }
+        };
+        let size = window.inner_size();
+        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+        descriptor.backends = wgpu::Backends::GL;
+        let instance = wgpu::Instance::new(descriptor);
+        let surface = match instance.create_surface(window.clone()) {
+            Ok(surface) => surface,
+            Err(error) => {
+                eprintln!("Failed to create WebGL surface: {error}");
+                event_loop.exit();
+                return;
+            }
+        };
+        self.window = Some(window.clone());
+
+        let renderer_slot = self.renderer.clone();
+        let model_path = self.model_path.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            match Renderer::new_with_surface(
+                instance,
+                surface,
+                size.width,
+                size.height,
+                &model_path,
+                None,
+            )
+            .await
+            {
+                Ok(renderer) => {
+                    *renderer_slot.borrow_mut() = Some(renderer);
+                    window.request_redraw();
+                }
+                Err(error) => eprintln!("Renderer initialization failed: {error}"),
+            }
+        });
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        let Some(window) = self
+            .window
+            .as_ref()
+            .filter(|window| window.id() == window_id)
+        else {
+            return;
+        };
+        match event {
+            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::Resized(size) => {
+                if let Some(renderer) = self.renderer.borrow_mut().as_mut() {
+                    renderer.resize(size.width, size.height);
+                }
+            }
+            WindowEvent::RedrawRequested => {
+                if let Some(renderer) = self.renderer.borrow_mut().as_mut() {
+                    if let Err(error) = renderer.render() {
+                        eprintln!("Rendering failed: {error}");
+                        event_loop.exit();
+                        return;
+                    }
+                }
+            }
+            _ => {}
+        }
+        window.request_redraw();
+    }
+
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    use winit::platform::web::EventLoopExtWebSys;
+
+    let event_loop = EventLoop::new()?;
+    event_loop.set_control_flow(ControlFlow::Poll);
+    event_loop.spawn_app(BrowserApp {
+        window: None,
+        renderer: std::rc::Rc::new(std::cell::RefCell::new(None)),
+        model_path: std::path::PathBuf::from("assets/model.fbx"),
+    });
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     if let Some(path) = args.iter().find_map(|arg| {
@@ -592,6 +752,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn build_sample_ui(ui: &Ui) {
     ui.window("YuriEngine ImGui")
         .size([300.0, 120.0], Condition::FirstUseEver)
