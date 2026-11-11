@@ -129,10 +129,10 @@ impl MeshPipeline {
                     attributes: &wgpu::vertex_attr_array![
                         0 => Float32x3,
                         1 => Float32x3,
-                        2 => Float32x4,
-                        3 => Uint32x4,
-                        4 => Float32x4,
-                        5 => Float32x2
+                        2 => Float32x2,
+                        3 => Float32x4,
+                        4 => Uint32x4,
+                        5 => Float32x4
                     ],
                 }],
             },

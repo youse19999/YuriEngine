@@ -16,10 +16,10 @@ var<storage, read> skin_matrices: array<mat4x4<f32>>;
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
-    @location(2) base_color: vec4<f32>,
-    @location(3) joints: vec4<u32>,
-    @location(4) weights: vec4<f32>,
-    @location(5) uv: vec2<f32>,
+    @location(2) uv: vec2<f32>,
+    @location(3) base_color: vec4<f32>,
+    @location(4) joints: vec4<u32>,
+    @location(5) weights: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -57,12 +57,13 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let texel = textureSample(base_color_texture, base_color_sampler, input.uv);
-    let color = texel * input.base_color;
-    if color.a < 0.01 {
+    let color = texel.rgb * input.base_color.rgb;
+    let alpha = input.base_color.a;
+    if alpha < 0.01 {
         discard;
     }
     let light = normalize(vec3<f32>(0.4, -0.6, 1.0));
     let diffuse = max(dot(normalize(input.normal), light), 0.0);
     let shade = 0.22 + diffuse * 0.78;
-    return vec4<f32>(color.rgb * shade, color.a);
+    return vec4<f32>(color * shade, alpha);
 }
