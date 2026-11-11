@@ -16,10 +16,10 @@ var<storage, read> skin_matrices: array<mat4x4<f32>>;
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
-    @location(2) base_color: vec4<f32>,
-    @location(3) joints: vec4<u32>,
-    @location(4) weights: vec4<f32>,
-    @location(5) uv: vec2<f32>,
+    @location(2) uv: vec2<f32>,
+    @location(3) base_color: vec4<f32>,
+    @location(4) joints: vec4<u32>,
+    @location(5) weights: vec4<f32>,
 };
 
 struct VertexOutput {
