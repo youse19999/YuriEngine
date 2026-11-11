@@ -44,7 +44,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes libxkbcommon-x11-0 libwayland-dev libxkbcommon-dev xvfb
+          sudo apt-get install --yes libxkbcommon-x11-0 libwayland-dev libxkbcommon-dev libgl1-mesa-dri libegl1 libgles2 mesa-vulkan-drivers xvfb
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -57,6 +57,10 @@ jobs:
         run: cargo clippy --fix --allow-dirty --locked --all-targets
       - name: Test
         run: cargo test --locked --all-targets
+        if: matrix.os != 'macos-latest'
+      - name: Test (macOS)
+        run: cargo test --locked --all-targets --no-default-features
+        if: matrix.os == 'macos-latest'
       - name: Build
         run: cargo build --locked
       - name: Present frames (Linux)
