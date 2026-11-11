@@ -4,7 +4,7 @@ use std::{
     time::Instant,
 };
 
-use imgui::{Condition, Context, TreeNodeFlags, Ui};
+use imgui::Context;
 use imgui_wgpu::{Renderer as ImGuiRenderer, RendererConfig};
 use imgui_winit_support::{HiDpiMode, WinitPlatform};
 use wgpu::CurrentSurfaceTexture;
@@ -14,6 +14,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
 mod capture;
+mod editor;
 mod fbx;
 mod fbx_animation;
 mod fbx_hierarchy;
@@ -22,6 +23,7 @@ mod fbx_skin;
 mod mesh;
 mod scene;
 mod texture;
+use editor::scene_menu::{SceneMenu, SceneMenuAction};
 use mesh::MeshPipeline;
 use scene::{Component, ObjectId, Scene};
 
@@ -240,6 +242,26 @@ impl Renderer {
         })
     }
 
+    fn replace_scene(&mut self, scene: Scene) -> Result<(), String> {
+        let mut mesh_pipelines = HashMap::new();
+        for object in scene.objects() {
+            for component in object.components() {
+                let Component::MeshRenderer(mesh_renderer) = component else {
+                    continue;
+                };
+                let model = scene.model(mesh_renderer.model).ok_or_else(|| {
+                    format!("object '{}' references a missing model", object.name)
+                })?;
+                let pipeline =
+                    MeshPipeline::new(&self.device, &self.queue, self.config.format, &model.mesh);
+                mesh_pipelines.insert(object.id, pipeline);
+            }
+        }
+        self.scene = scene;
+        self.mesh_pipelines = mesh_pipelines;
+        Ok(())
+    }
+
     fn resize(&mut self, width: u32, height: u32) {
         if !should_configure(self.config.width, self.config.height, width, height) {
             return;
@@ -377,6 +399,7 @@ struct App {
     animation_path: Option<std::path::PathBuf>,
     scene_path: Option<std::path::PathBuf>,
     save_scene_path: Option<std::path::PathBuf>,
+    scene_menu: SceneMenu,
 }
 
 impl App {
@@ -390,6 +413,7 @@ impl App {
         let mut imgui = Context::create();
         imgui.set_ini_filename(None);
         let imgui_platform = WinitPlatform::new(&mut imgui);
+        let scene_menu = SceneMenu::new(scene_path.as_ref().or(save_scene_path.as_ref()));
         Self {
             window: None,
             renderer: None,
@@ -402,6 +426,52 @@ impl App {
             animation_path,
             scene_path,
             save_scene_path,
+            scene_menu,
+        }
+    }
+
+    fn apply_scene_menu_action(&mut self, action: SceneMenuAction) {
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
+        match action {
+            SceneMenuAction::New => {
+                let mut scene = Scene::new();
+                scene.create_game_object("Scene Root");
+                match renderer.replace_scene(scene) {
+                    Ok(()) => {
+                        self.selected_object = None;
+                        self.scene_menu.clear_path();
+                        self.save_scene_path = None;
+                        self.scene_menu.set_status("Created a new scene");
+                    }
+                    Err(error) => self.scene_menu.set_status(error),
+                }
+            }
+            SceneMenuAction::Open(path) => match Scene::load_bson(&path) {
+                Ok(scene) => match renderer.replace_scene(scene) {
+                    Ok(()) => {
+                        self.selected_object = None;
+                        self.scene_menu.set_path(&path);
+                        if self.save_scene_path.is_some() {
+                            self.save_scene_path = Some(path.clone());
+                        }
+                        self.scene_menu
+                            .set_status(format!("Opened {}", path.display()));
+                    }
+                    Err(error) => self.scene_menu.set_status(error),
+                },
+                Err(error) => self.scene_menu.set_status(error),
+            },
+            SceneMenuAction::Save(path) => match renderer.scene.save_bson(&path) {
+                Ok(()) => {
+                    self.scene_menu.set_path(&path);
+                    self.save_scene_path = Some(path.clone());
+                    self.scene_menu
+                        .set_status(format!("Saved {}", path.display()));
+                }
+                Err(error) => self.scene_menu.set_status(error),
+            },
         }
     }
 }
@@ -474,6 +544,7 @@ impl ApplicationHandler for App {
                 event: event.clone(),
             },
         );
+        let mut pending_scene_action = None;
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
@@ -492,8 +563,10 @@ impl ApplicationHandler for App {
                     return;
                 }
                 let ui = self.imgui.frame();
+                pending_scene_action = self.scene_menu.draw(ui);
                 if let Some(renderer) = self.renderer.as_mut() {
-                    build_scene_ui(ui, &mut renderer.scene, &mut self.selected_object);
+                    editor::build_hierarchy(ui, &mut renderer.scene, &mut self.selected_object);
+                    editor::build_inspector(ui, &mut renderer.scene, &mut self.selected_object);
                 }
                 self.imgui_platform.prepare_render(ui, window);
                 let draw_data = self.imgui.render();
@@ -519,6 +592,9 @@ impl ApplicationHandler for App {
             _ => {}
         }
         window.request_redraw();
+        if let Some(action) = pending_scene_action {
+            self.apply_scene_menu_action(action);
+        }
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
@@ -689,105 +765,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         save_scene_path,
     ))?;
     Ok(())
-}
-
-fn draw_hierarchy_nodes(
-    ui: &Ui,
-    scene: &Scene,
-    parent: Option<ObjectId>,
-    selected_object: &mut Option<ObjectId>,
-) {
-    let children = scene
-        .objects()
-        .iter()
-        .filter(|object| object.parent() == parent)
-        .map(|object| {
-            let has_children = scene
-                .objects()
-                .iter()
-                .any(|candidate| candidate.parent() == Some(object.id));
-            (object.id, object.name.clone(), has_children)
-        })
-        .collect::<Vec<_>>();
-
-    for (object_id, name, has_children) in children {
-        let label = format!("{name}##{object_id:?}");
-        let node = ui
-            .tree_node_config(label.as_str())
-            .selected(*selected_object == Some(object_id))
-            .flags(TreeNodeFlags::SPAN_AVAIL_WIDTH)
-            .leaf(!has_children)
-            .tree_push_on_open(has_children);
-        let open = node.push();
-        if ui.is_item_clicked() {
-            *selected_object = Some(object_id);
-        }
-        if let Some(token) = open {
-            draw_hierarchy_nodes(ui, scene, Some(object_id), selected_object);
-            token.pop();
-        }
-    }
-}
-
-fn build_scene_ui(ui: &Ui, scene: &mut Scene, selected_object: &mut Option<ObjectId>) {
-    ui.window("Scene")
-        .size([340.0, 580.0], Condition::FirstUseEver)
-        .build(|| {
-            ui.text("Hierarchy");
-            ui.separator();
-            draw_hierarchy_nodes(ui, scene, None, selected_object);
-
-            if ui.button("Add Empty GameObject") {
-                let object_id = scene.create_game_object("GameObject");
-                if let Some(parent) = *selected_object {
-                    scene.set_parent(object_id, Some(parent));
-                }
-                *selected_object = Some(object_id);
-            }
-
-            ui.separator();
-            ui.text("Inspector");
-            if let Some(object_id) = *selected_object {
-                if let Some(object) = scene.object_mut(object_id) {
-                    ui.text(format!("Name: {}", object.name));
-                    {
-                        let transform = object.transform_mut();
-                        ui.input_float3("Position", &mut transform.translation)
-                            .build();
-                        ui.input_float4("Rotation (x, y, z, w)", &mut transform.rotation)
-                            .build();
-                        ui.input_float3("Scale", &mut transform.scale).build();
-                    }
-                    ui.separator();
-                    ui.text("Components");
-                    for component in object.components() {
-                        match component {
-                            Component::Transform(_) => ui.bullet_text("Transform"),
-                            Component::MeshRenderer(_) => ui.bullet_text("MeshRenderer"),
-                            Component::Animator(animator) => {
-                                ui.bullet_text(format!("Animator (clip {})", animator.clip_index))
-                            }
-                        }
-                    }
-                } else {
-                    *selected_object = None;
-                    ui.text("No object selected");
-                }
-            } else {
-                ui.text("Select an object to edit its transform.");
-            }
-        });
-}
-
-pub(crate) fn build_sample_ui(ui: &Ui) {
-    ui.window("YuriEngine ImGui")
-        .size([300.0, 120.0], Condition::FirstUseEver)
-        .build(|| {
-            ui.text("Dear ImGui is running inside YuriEngine.");
-            ui.separator();
-            ui.text("Renderer: wgpu");
-            ui.text("Platform: winit");
-        });
 }
 
 #[cfg(test)]

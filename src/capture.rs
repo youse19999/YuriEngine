@@ -5,7 +5,8 @@ use std::path::Path;
 use std::sync::mpsc;
 
 use crate::{
-    build_sample_ui, fbx, fbx_animation,
+    editor::build_sample_ui,
+    fbx, fbx_animation,
     mesh::MeshPipeline,
     scene::{Component, Scene},
 };
