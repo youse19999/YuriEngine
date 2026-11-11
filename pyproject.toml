@@ -1,0 +1,14 @@
+[build-system]
+requires = ["maturin>=1.8,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "yuriengine"
+version = "0.1.0"
+description = "Python bindings for the YuriEngine renderer"
+requires-python = ">=3.9"
+
+[tool.maturin]
+bindings = "pyo3"
+module-name = "yuriengine"
+features = ["pyo3/extension-module"]

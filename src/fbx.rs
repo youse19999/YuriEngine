@@ -359,30 +359,6 @@ fn find_file_by_name(
     None
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn loads_requested_avatar_fbx() {
-        let path = Path::new(r"G:\Tsugu\sample\MUMUS_Avatar\fbx\Mumus_fbx.fbx");
-        if !path.exists() {
-            return;
-        }
-        let model = load(path).expect("avatar FBX should import");
-        assert!(model.source_meshes > 0);
-        assert!(model.triangles > 0);
-        assert_eq!(model.vertices.len(), model.triangles * 3);
-        assert!(model
-            .vertices
-            .iter()
-            .all(|vertex| vertex.position.iter().all(|v| v.is_finite())));
-        assert!(model.bounds_max[0] - model.bounds_min[0] > 0.01);
-        assert!(model.bounds_max[1] - model.bounds_min[1] > 0.01);
-        assert!(model.bounds_max[2] - model.bounds_min[2] > 0.01);
-    }
-}
-
 fn normalize(v: [f32; 3]) -> [f32; 3] {
     let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
     if len.is_finite() && len > 1e-8 {

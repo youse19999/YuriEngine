@@ -23,6 +23,38 @@ cargo run -- --model=assets/character.fbx --model=assets/prop.fbx
 cargo run -- --model=assets/character.fbx --animation=assets/walk.fbx
 ```
 
+## Python API
+
+The engine can also be controlled from Python through PyO3. Build and install the extension in a
+virtual environment with maturin:
+
+```sh
+python -m venv .venv
+# Activate .venv for your shell, then:
+python -m pip install maturin
+maturin develop
+```
+
+Python creates a scene, imports an FBX into a game object, adjusts its transform, and starts the
+Rust window/render loop. `start()` runs until the window closes; `render()` opens the renderer for
+a finite number of frames:
+
+```python
+from yuriengine import Engine, Scene
+
+scene = Scene()
+avatar = scene.load_fbx("assets/character.fbx", name="Avatar")
+avatar.position = (0.0, 0.0, 0.0)
+avatar.scale = (1.0, 1.0, 1.0)
+avatar.play(0)  # first imported animation clip
+
+Engine().start(scene)
+# For a bounded render instead: Engine().render(scene, frames=5)
+```
+
+The FBX import check runs from Python. Set `YURIENGINE_TEST_FBX` to a local FBX file and run
+`python -m unittest discover -s python/tests`.
+
 The application opens an 800 × 600 window and exits when the window is closed. For an automated
 window/present smoke check, run `cargo run -- --smoke-frames=5`; it exits after five frames have
 been presented. Linux CI runs this under Xvfb, while Windows and macOS CI use their hosted GUI

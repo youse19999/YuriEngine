@@ -3,9 +3,14 @@ name = "yuriengine-inspection"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "yuriengine"
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 bytemuck = { version = "1.24", features = ["derive"] }
 pollster = "1.0.1"
+pyo3 = { version = "0.23.5", features = ["extension-module"] }
 imgui = "0.12"
 imgui-wgpu = "0.28"
 imgui-winit-support = "0.13"

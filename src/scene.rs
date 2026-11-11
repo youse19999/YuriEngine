@@ -165,6 +165,15 @@ impl GameObject {
         true
     }
 
+    pub fn mesh_renderer(&self) -> Option<&MeshRenderer> {
+        self.components
+            .iter()
+            .find_map(|component| match component {
+                Component::MeshRenderer(renderer) => Some(renderer),
+                _ => None,
+            })
+    }
+
     pub fn animator(&self) -> Option<&Animator> {
         self.components
             .iter()
@@ -239,6 +248,29 @@ impl Scene {
             return false;
         };
         object.add_component(component)
+    }
+
+    pub fn play_animation(&mut self, id: ObjectId, clip_index: usize) -> bool {
+        let Some(model_id) = self
+            .object(id)
+            .and_then(GameObject::mesh_renderer)
+            .map(|renderer| renderer.model)
+        else {
+            return false;
+        };
+        let Some(model) = self.model(model_id) else {
+            return false;
+        };
+        if clip_index >= model.mesh.animation.clips.len() {
+            return false;
+        }
+        let Some(animator) = self.object_mut(id).and_then(GameObject::animator_mut) else {
+            return false;
+        };
+        animator.clip_index = clip_index;
+        animator.elapsed_seconds = 0.0;
+        animator.playing = true;
+        true
     }
 
     pub fn set_parent(&mut self, child: ObjectId, parent: Option<ObjectId>) -> bool {
