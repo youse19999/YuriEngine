@@ -11,6 +11,23 @@ permissions:
   contents: read
 
 jobs:
+  build-windows:
+    name: Build Windows executable
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Build release executable
+        run: cargo build --locked --release
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: yuriengine-windows-x86_64
+          path: target/release/yuriengine-inspection.exe
+          if-no-files-found: error
+
   validate:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
