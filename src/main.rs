@@ -618,15 +618,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         return Ok(());
     }
-    let mut model_paths = args
+    let model_paths = args
         .iter()
         .filter_map(|arg| arg.strip_prefix("--model=").map(std::path::PathBuf::from))
         .collect::<Vec<_>>();
-    if model_paths.is_empty() {
-        model_paths.push(std::path::PathBuf::from(
-            r"G:\Tsugu\sample\MUMUS_Avatar\fbx\Mumus_fbx.fbx",
-        ));
-    }
     let animation_path = args.iter().find_map(|arg| {
         arg.strip_prefix("--animation=")
             .map(std::path::PathBuf::from)
@@ -635,11 +630,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .find_map(|arg| arg.strip_prefix("--capture-frame=").map(str::to_owned))
     {
+        let Some(model_path) = model_paths.first() else {
+            return Err("--capture-frame requires at least one --model=<path> argument".into());
+        };
         return pollster::block_on(capture::render_to_png(
             std::path::Path::new(&path),
-            model_paths
-                .first()
-                .expect("a default model path is inserted"),
+            model_path,
         ));
     }
 
